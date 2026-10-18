@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>实验进度</title>
+<style>
+:root{color-scheme:light dark;--bg:light-dark(#f5f6f7,#17191b);--panel:light-dark(#fff,#222528);--ink:light-dark(#20292c,#edf1f2);--muted:light-dark(#626f76,#acb7bc);--line:light-dark(#e1e6e8,#3c4347);--track:light-dark(#e8edef,#3c4347);--green:light-dark(#287f65,#7acdb1);--red:light-dark(#b64d3e,#f3a18e);--blue:light-dark(#457eb7,#85b9ec)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1040px;margin:38px auto;padding:0 24px 40px}header{display:flex;gap:24px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:24px}h1{font-size:24px;font-weight:600;letter-spacing:-.6px;margin:0}h2{font-size:18px;font-weight:600;margin:0;overflow-wrap:anywhere}.sub,.label{color:var(--muted);font-size:12px}.picker{display:flex;flex-direction:column;gap:4px;max-width:100%;min-width:240px}select,button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 12px;max-width:100%}button{cursor:pointer}.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px}.title-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.tag{background:var(--bg);border-radius:6px;padding:3px 9px;font-size:12px;white-space:nowrap}.metrics{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:24px;margin:28px 0 24px}.value{font-size:29px;font-weight:550;line-height:1.4;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.hint{font-size:12px;color:var(--muted);margin-top:4px}.progress-title{display:flex;justify-content:space-between;gap:8px;font-size:12px;margin-bottom:8px}.track{height:12px;display:flex;overflow:hidden;border-radius:6px;background:var(--track)}.track span{height:100%}.success{background:var(--green)}.failure{background:var(--red)}.running{background:var(--blue)}.legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;font-size:12px}.legend span{display:inline-flex;align-items:center;gap:6px}.dot{width:7px;height:7px;border-radius:100%;display:inline-block}.note{color:var(--muted);font-size:12px;margin:18px 0 22px}.meta{border-top:1px solid var(--line);padding-top:16px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px}.section{margin-top:22px}.section h3{font-weight:550;font-size:14px;margin:0 0 9px}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:9px 10px 9px 0;overflow-wrap:anywhere}th{color:var(--muted);font-weight:400}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}summary{cursor:pointer;font-weight:500;min-height:32px}pre{font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:14px;border-radius:8px;max-height:300px;overflow:auto}.empty{padding:40px 0;color:var(--muted)}.warning{color:var(--red);margin:0 0 18px;font-size:13px}.source{overflow-wrap:anywhere;color:var(--muted);font-size:12px}footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;margin-top:18px}[hidden]{display:none!important}
+@media(max-width:700px){main{margin:24px auto;padding:0 16px 30px}.panel{padding:20px}.metrics{grid-template-columns:1fr 1fr;gap:22px}.metrics>div:last-child{grid-column:1/-1}.value{font-size:25px}.picker{width:100%}header{gap:16px}.legend{gap:10px}}
+@media(pointer:coarse){button,select,summary{min-height:44px}}
+</style>
+</head>
+<body><main>
+<header><div><h1>实验进度</h1><div class="sub">本机实验 · 自动刷新</div></div><label class="picker"><span class="label">最近 50 轮实验</span><select id="runs" aria-label="选择实验轮次"><option>正在读取…</option></select></label></header>
+<p id="connection" class="warning" role="status" hidden></p>
+<div id="empty" class="panel empty" hidden>暂无实验记录。让 Codex 启动一轮长实验时接入 experiment-progress，进度会显示在这里。</div>
+<section id="detail" class="panel" hidden>
+  <div class="title-row"><h2 id="name"></h2><span id="state" class="tag" role="status"></span></div>
+  <div id="demo" class="hint" hidden>模拟实验 · 用于检查面板，不是科研结果</div>
+  <div class="metrics">
+    <div><div class="label">已结束 / 总实验数</div><div id="count" class="value"></div><div id="count-note" class="hint"></div></div>
+    <div><div class="label" id="elapsed-label">已经运行</div><div id="elapsed" class="value"></div><div id="started" class="hint"></div></div>
+    <div><div class="label">预计剩余</div><div id="eta" class="value"></div><div id="eta-total" class="hint"></div></div>
+  </div>
+  <div class="progress-title"><span>实验数量进度</span><span id="percent"></span></div>
+  <div id="progress" class="track" role="progressbar" aria-label="已结束实验比例" aria-valuemin="0" aria-valuemax="100"><span id="success-bar" class="success"></span><span id="failed-bar" class="failure"></span><span id="running-bar" class="running"></span></div>
+  <div class="legend"><span><i class="dot success" aria-hidden="true"></i><span id="success"></span></span><span><i class="dot failure" aria-hidden="true"></i><span id="failed"></span></span><span><i class="dot running" aria-hidden="true"></i><span id="running"></span></span><span><i class="dot" style="background:var(--track)" aria-hidden="true"></i><span id="pending"></span></span></div>
+  <div id="eta-note" class="note"></div>
+  <div class="meta"><span id="activity"></span><span id="updated"></span></div>
+  <section class="section" id="active-section"><h3 id="active-heading">正在运行</h3><div class="table-wrap"><table><thead><tr><th>实验 ID</th><th>组别</th><th class="num">本次耗时</th><th class="num">尝试次数</th></tr></thead><tbody id="active"></tbody></table></div></section>
+  <section class="section" id="groups-section"><h3 id="groups-heading">实验分组</h3><div class="table-wrap"><table><thead><tr><th>组别</th><th class="num">已登记</th><th class="num">成功</th><th class="num">失败</th><th class="num">运行中</th></tr></thead><tbody id="groups"></tbody></table></div></section>
+  <details class="section" id="failures-section"><summary id="failures-label">失败实验</summary><div id="failures"></div></details>
+  <details class="section"><summary>最近日志</summary><pre id="log"></pre></details>
+  <details class="section"><summary>记录位置</summary><div id="source" class="source"></div></details>
+</section>
+<footer><span id="refresh">每 2 秒读取本机状态</span><span>面板刷新不调用模型</span></footer>
+</main>
+<script>
+(()=>{
+const params=new URLSearchParams(location.search),token=params.get('token');
+const $=id=>document.getElementById(id),text=(id,value)=>{$(id).textContent=value;};
+let selected=params.get('run'),busy=false,lastGood=null,lastOptions='';
+const activeStates=new Set(['starting','running','observing']);
+const states={starting:'正在启动',running:'运行中',observing:'正在观察已有进程',completed:'全部成功',completed_with_errors:'已结束 · 含失败任务',failed:'实验进程失败',unverified:'进程已结束 · 计数未核实',exit_unknown:'已观察到进程退出 · 退出码未知',monitor_error:'监测程序异常 · 进程状态待核验'};
+function duration(s){s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),v=s%60;return h?`${h} 小时 ${String(m).padStart(2,'0')} 分`:(m?`${m} 分 ${String(v).padStart(2,'0')} 秒`:`${v} 秒`);}
+function range(a,b){const lo=duration(a),hi=duration(b);return lo===hi?lo:lo+'–'+hi;}
+function date(s){return new Date(s*1000).toLocaleString('zh-CN',{timeZone:'Asia/Taipei',hour12:false});}
+function rows(id,values){const out=document.createDocumentFragment();for(const fields of values){const tr=document.createElement('tr');fields.forEach((value,i)=>{const td=document.createElement('td');td.textContent=String(value);if(i>1)td.className='num';tr.append(td);});out.append(tr);}$(id).replaceChildren(out);}
+async function api(path){const response=await fetch(path,{headers:{Authorization:'Bearer '+(token||'')},cache:'no-store',signal:AbortSignal.timeout(6000)});if(!response.ok)throw Error(response.status===403?'访问凭据已失效，请用本地启动器重新打开面板。':'暂时无法读取实验状态。');return response.json();}
+function render(r){
+ const c=r.counts,ended=c.succeeded+c.failed,isActive=activeStates.has(r.status),isLive=isActive&&!r.stale;
+ $('detail').hidden=false;$('empty').hidden=true;text('name',r.name);$('demo').hidden=!r.demo;
+ text('state',r.stale?'监测信号中断 · 待核验':states[r.status]||r.status);
+ text('count',`${ended} / ${r.total??'未知'}`);text('count-note',c.failed?`其中 ${c.failed} 次失败`:'失败任务单独计数');
+ text('elapsed-label',r.stale?'最后确认的耗时':'已经运行');text('elapsed',duration(r.stale?Math.max(0,r.heartbeat-r.started):r.elapsed));text('started','启动于 '+date(r.started));
+ const estimate=r.eta.seconds;
+ if(estimate&&isLive){text('eta','约 '+range(estimate[0],estimate[1]));text('eta-total','预计总耗时 '+range(r.elapsed+estimate[0],r.elapsed+estimate[1]));}
+ else{text('eta',isActive||r.status==='monitor_error'?'暂无法估计':'已退出');text('eta-total',isActive?r.eta.reason:r.status==='monitor_error'?'请核验实验进程':'记录耗时 '+duration(r.elapsed));}
+ text('eta-note',isActive?r.eta.reason:'数量基于任务报告；进程退出不自动补齐成功次数。');
+ text('percent',r.total===null?'总量未知':`${(100*ended/r.total).toFixed(1)}%`);
+ for(const [id,key] of [['success-bar','succeeded'],['failed-bar','failed'],['running-bar','running']])$(id).style.width=(r.total?100*c[key]/r.total:0)+'%';
+ if(r.total)$('progress').setAttribute('aria-valuenow',String(100*ended/r.total));else $('progress').removeAttribute('aria-valuenow');
+ text('success','成功 '+c.succeeded);text('failed','失败 '+c.failed);text('running',(isLive||!c.running?'运行中 ':'最后记录为运行中 ')+c.running);text('pending',(r.total===null?'已登记等待 ':isLive||!c.pending?'等待 / 未报告 ':'未报告结束 ')+c.pending);
+ text('activity',(r.pid?'实验 PID '+r.pid:'等待进程启动')+(r.exit_code!==null?' · 退出码 '+r.exit_code:''));text('updated','最近监测信号 '+date(r.heartbeat));
+ $('active-section').hidden=!r.active.length;text('active-heading',isLive?'正在运行（最多显示 30 项）':'最后记录为运行中（状态待核验）');
+ rows('active',r.active.map(t=>[t.id,t.group_name,t.started?duration(Math.max(0,(isLive?r.server_time:(r.ended||r.heartbeat))-t.started)):'未知',t.attempt]));
+ $('groups-section').hidden=!r.groups.length;text('groups-heading',r.planned?'实验分组':'已报告的实验组（未必覆盖全部任务）');
+ rows('groups',r.groups.map(g=>[g.name,g.registered,g.succeeded,g.failed,g.running]));
+ $('failures-section').hidden=!c.failed;text('failures-label',`失败实验 ${c.failed} 项（最多显示 30 项）`);text('failures',r.failures.map(t=>t.id+' · '+t.group_name).join('\n'));$('failures').style.whiteSpace='pre-wrap';
+ text('log',r.log_tail||'尚无日志');text('source','工作目录：'+r.cwd+'\n日志：'+r.log+'\n轮次 ID：'+r.id);$('source').style.whiteSpace='pre-wrap';
+}
+async function refresh(){
+ if(busy)return;busy=true;
+ try{
+  const runs=await api('/api/runs');
+  if(!runs.some(r=>r.id===selected))selected=runs[0]?.id||null;
+  const signature=JSON.stringify(runs.map(r=>[r.id,r.name,r.started,r.demo]));
+  if(signature!==lastOptions){const options=runs.map(r=>{const option=document.createElement('option');option.value=r.id;option.textContent=(r.demo?'[模拟] ':'')+r.name+' · '+date(r.started);return option;});$('runs').replaceChildren(...options);lastOptions=signature;}
+  if(selected)$('runs').value=selected;
+  if(selected){const key=selected,r=await api('/api/run/'+key);if(key===selected)render(r);}else{$('empty').hidden=false;$('detail').hidden=true;}
+  lastGood=new Date();$('connection').hidden=true;text('refresh','已刷新 '+lastGood.toLocaleTimeString('zh-CN',{hour12:false})+' · 每 2 秒更新');
+ }catch(error){$('connection').hidden=false;const message=error instanceof TypeError||error.name==='TimeoutError'?'无法连接本机服务，请用启动器重新打开面板。':error.message;text('connection',message+' 当前保留最后一次数据。');text('refresh',lastGood?'最后成功刷新 '+lastGood.toLocaleTimeString('zh-CN',{hour12:false}):'尚未连接');}
+ finally{busy=false;}
+}
+$('runs').addEventListener('change',()=>{selected=$('runs').value;const u=new URL(location.href);u.searchParams.set('run',selected);history.replaceState(null,'',u);refresh();});
+refresh();setInterval(refresh,2000);
+})();
+</script></body></html>
