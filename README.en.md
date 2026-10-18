@@ -18,7 +18,7 @@ Only synthetic tasks appear in the screenshot. The demo should finish with 14 su
 ## Install and use in Codex
 
 ```text
-$skill-installer Install https://github.com/ylimingtju/experiment-progress/tree/v0.1.0/skills/experiment-progress.
+$skill-installer Install https://github.com/ylimingtju/experiment-progress/tree/v0.2.0/skills/experiment-progress.
 ```
 
 ```text
@@ -53,7 +53,7 @@ A plan is a JSON array:
 [{"id":"case-001","group":"small"},{"id":"case-002","group":"large"}]
 ```
 
-The plan length supplies the total. Without a per-task plan, you can use `--total 120`; omit it when the total is unknown. The launched command must wait for all workers. Do not submit work and exit, add `nohup`, or append `&`.
+The plan length supplies the total. Without a per-task plan, you can use `--total 120`; unreported tasks use the current single group or pooled samples from this run for a rough estimate. Supply the full plan when groups are known. Omit the total when it is unknown. The launched command must wait for all workers. Do not submit work and exit, add `nohup`, or append `&`.
 
 ## Report task events
 
@@ -82,10 +82,25 @@ python3 "$EP" attach --name "Existing experiment" --pid PID --cwd /absolute/proj
 
 `attach` observes an existing process without restarting it. It cannot obtain that process's exit code or parse arbitrary logs into task outcomes. Add task events or a read-only adapter separately. When the process exits, the outcome remains unknown; this does not prove that all experiments succeeded.
 
+## Supply an initial duration estimate
+
+When comparable historical records, pilot records, or a user estimate exist, supply the duration of one task and its source at launch or attach time. Put these options before the experiment-command separator `--`. The 20 seconds below is only an argument example; replace it with a supported value:
+
+```sh
+python3 "$EP" launch --name "Parameter comparison" --cwd /absolute/project --plan /absolute/project/work/plan.json --estimate-seconds 20 --estimate-source "Replace with evidence from this project under the same settings" -- python3 -u driver.py
+python3 "$EP" set-prior --run RUN_ID --seconds 20 --source "Replace with actual evidence"
+python3 "$EP" set-prior --run RUN_ID --group small --seconds 20 --source "Replace with evidence for this group"
+```
+
+`set-prior` adds or updates a prior in an active run without restarting the experiment. Omit `--group` for a shared prior for groups without timed samples. Valid same-group samples take priority once available. Use `--estimate-seconds` and `--estimate-source` together; `attach` supports them too. Do not use whole-batch time or a solver limit as a mean task duration, run extra experiments just to estimate time, or automatically import records from other projects.
+
 ## ETA, records, and access
 
 - Finished tasks include successes and failures. Exit code zero does not prove that every trial finished. Pending or unreported tasks remain visible.
-- ETA uses the 25th–75th percentile durations of up to 30 recent successful timed samples per remaining group and the current concurrency. Each remaining group needs at least three such samples. Unknown totals, missing group information, or tasks outside the estimated duration range produce an unknown ETA. The interval is not a confidence interval or a theoretical guarantee.
+- With one or two valid successful timed samples in a group, the page shows an early estimate using half the shortest to twice the longest sample. At three or more samples, it uses the 25th–75th percentile durations of up to 30 recent same-group samples.
+- Without same-group samples, a group or shared prior takes priority: half to twice the supplied duration, labeled as an initial estimate with its source. Otherwise, it borrows up to 30 recent successful timed samples from this run, widens their 25th–75th percentile range to half its lower end through twice its upper end, and labels it a rough estimate across groups. Group differences may cause large errors.
+- Remaining time uses the current concurrency and waiting tasks, subtracting time already spent on active tasks. When a task reaches or exceeds the old upper end, the estimated total duration per task in its group increases to 1.25–2 times the age of that group's longest-running task. The page labels this a dynamic rough estimate. These heuristic ranges are not confidence intervals, theoretical guarantees, or deadlines.
+- ETA remains unknown without a total, active tasks, a current heartbeat, or either valid samples or a prior. Failed, untimed, and zero-duration events are excluded from timing samples.
 - The estimate assumes independent tasks, comparable durations within each group, and unchanged concurrency. Dependencies, changing worker counts, long solver tails, and computer sleep can invalidate it. Task-count progress is not elapsed-time progress.
 - The page reads the local service every two seconds without model calls. A stale heartbeat or read failure keeps the last data and shows a warning; it does not establish experiment failure.
 - State defaults to `~/.codex/experiment-progress/`. Set `EXPERIMENT_PROGRESS_HOME` for an isolated directory. The page shows the latest 50 runs, up to 30 task details per category, and roughly the last 8 KB of logs. The local database retains the full state.
@@ -97,8 +112,12 @@ python3 "$EP" attach --name "Existing experiment" --pid PID --cwd /absolute/proj
 python3 -B skills/experiment-progress/scripts/test_monitor.py
 ```
 
-The existing test checks counts, retries, concurrent writes, ETA, stale heartbeats, HTTP access, detached launch, failed exits, and process observation. It uses a temporary state directory and stops its test service. It does not establish the scientific correctness of an experiment or verify Linux or Windows compatibility.
+The existing test checks counts, retries, concurrent writes, early/grouped/prior/overrun ETA, dashboard address reuse, stale heartbeats, HTTP access, detached launch, failed exits, and process observation. It uses a temporary state directory and stops its test service. It does not establish the scientific correctness of an experiment or verify Linux or Windows compatibility.
 
-The initial release tag is `v0.1.0`. For an issue, include the OS, Python version, a small synthetic task, and expected and observed states. Remove tokens, personal paths, and unpublished data.
+## Update from an older version
+
+The current version is `v0.2.0`; the initial `v0.1.0` tag is preserved. Keep custom edits before updating the skill. Do not delete the state directory. Database access adds the `eta_priors` table when needed and retains existing runs and tasks. Replacing files does not update a running service automatically. Restart the dashboard service at a suitable time and reopen the page; do not restart experiments just to update the dashboard.
+
+ For an issue, include the OS, Python version, a small synthetic task, and expected and observed states. Remove tokens, personal paths, and unpublished data.
 
 Author: [Liming Yang](https://github.com/ylimingtju). Released under the [MIT license](LICENSE).

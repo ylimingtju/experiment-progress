@@ -20,7 +20,7 @@
   <div class="metrics">
     <div><div class="label">已结束 / 总实验数</div><div id="count" class="value"></div><div id="count-note" class="hint"></div></div>
     <div><div class="label" id="elapsed-label">已经运行</div><div id="elapsed" class="value"></div><div id="started" class="hint"></div></div>
-    <div><div class="label">预计剩余</div><div id="eta" class="value"></div><div id="eta-total" class="hint"></div></div>
+    <div><div class="label" id="eta-label">预计剩余</div><div id="eta" class="value"></div><div id="eta-total" class="hint"></div></div>
   </div>
   <div class="progress-title"><span>实验数量进度</span><span id="percent"></span></div>
   <div id="progress" class="track" role="progressbar" aria-label="已结束实验比例" aria-valuemin="0" aria-valuemax="100"><span id="success-bar" class="success"></span><span id="failed-bar" class="failure"></span><span id="running-bar" class="running"></span></div>
@@ -54,6 +54,7 @@ function render(r){
  text('count',`${ended} / ${r.total??'未知'}`);text('count-note',c.failed?`其中 ${c.failed} 次失败`:'失败任务单独计数');
  text('elapsed-label',r.stale?'最后确认的耗时':'已经运行');text('elapsed',duration(r.stale?Math.max(0,r.heartbeat-r.started):r.elapsed));text('started','启动于 '+date(r.started));
  const estimate=r.eta.seconds;
+ text('eta-label','预计剩余'+(estimate&&isLive?' · '+(r.eta.label||'估计'):''));
  if(estimate&&isLive){text('eta','约 '+range(estimate[0],estimate[1]));text('eta-total','预计总耗时 '+range(r.elapsed+estimate[0],r.elapsed+estimate[1]));}
  else{text('eta',isActive||r.status==='monitor_error'?'暂无法估计':'已退出');text('eta-total',isActive?r.eta.reason:r.status==='monitor_error'?'请核验实验进程':'记录耗时 '+duration(r.elapsed));}
  text('eta-note',isActive?r.eta.reason:'数量基于任务报告；进程退出不自动补齐成功次数。');

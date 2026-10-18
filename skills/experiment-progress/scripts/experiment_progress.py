@@ -47,6 +47,11 @@ def db():
             state TEXT NOT NULL, started REAL, ended REAL, attempt INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (run_id, id)
           );
+          CREATE TABLE IF NOT EXISTS eta_priors (
+            run_id TEXT NOT NULL, group_name TEXT NOT NULL,
+            seconds REAL NOT NULL, source TEXT NOT NULL,
+            PRIMARY KEY (run_id, group_name)
+          );
         """)
         with conn:
             yield conn
@@ -66,8 +71,28 @@ def run_key(value):
     return value
 
 
-def create_run(name, cwd, total=None, plan=None, demo=False, log=None, started=None):
+def validate_prior(seconds, source):
+    if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("单次实验的启动预估必须为正数秒")
+    label(source)
+
+
+def set_prior(run_id, seconds, source, group="*"):
+    validate_prior(seconds, source)
+    run_key(run_id)
+    label(group)
+    with db() as c:
+        row = c.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()
+        if not row or row["status"] not in ACTIVE:
+            raise ValueError("实验轮次不存在或已经结束")
+        c.execute("INSERT OR REPLACE INTO eta_priors VALUES (?,?,?,?)", (run_id, group, seconds, source))
+
+
+def create_run(name, cwd, total=None, plan=None, demo=False, log=None, started=None,
+               estimate_seconds=None, estimate_source=None):
     label(name)
+    if estimate_seconds is not None or estimate_source is not None:
+        validate_prior(estimate_seconds, estimate_source)
     if total is not None and (type(total) is not int or total < 1):
         raise ValueError("总实验数必须为正整数，未知时省略")
     cwd = Path(cwd).resolve(strict=True)
@@ -92,6 +117,8 @@ def create_run(name, cwd, total=None, plan=None, demo=False, log=None, started=N
                    "starting", started or now, None, now, None, None, log))
         c.executemany("INSERT INTO tasks (run_id,id,group_name,state) VALUES (?,?,?,'pending')",
                       [(key, task_id, group) for task_id, group in rows])
+        if estimate_seconds is not None:
+            c.execute("INSERT INTO eta_priors VALUES (?,?,?,?)", (key, "*", estimate_seconds, estimate_source))
     return key
 
 
@@ -226,7 +253,7 @@ def quantile(values, fraction):
     return values[lo] + (values[hi] - values[lo]) * (pos - lo)
 
 
-def estimate(run, tasks, now):
+def estimate(run, tasks, now, priors=None):
     if run["status"] not in ACTIVE or now - run["heartbeat"] > 12:
         return {"seconds": None, "reason": "轮次未运行或监测信号中断"}
     active = [t for t in tasks if t["state"] == "running"]
@@ -237,32 +264,75 @@ def estimate(run, tasks, now):
         return {"seconds": None, "reason": "等待运行中的实验与并发信息"}
     if not run["planned"]:
         groups = {t["group_name"] for t in tasks}
-        if len(groups) > 1:
-            return {"seconds": None, "reason": "缺少各实验组的剩余任务清单"}
-        pending += [{"group_name": next(iter(groups), "default")} for _ in range(max(0, run["total"] - len(tasks)))]
-    samples = {}
+        group = next(iter(groups)) if len(groups) == 1 else None
+        pending += [{"group_name": group} for _ in range(max(0, run["total"] - len(tasks)))]
+    samples, pooled = {}, []
     for t in sorted(tasks, key=lambda t: t["ended"] or 0):
         if t["state"] == "succeeded" and t["started"] is not None and t["ended"] is not None:
-            samples.setdefault(t["group_name"], []).append(max(0, t["ended"] - t["started"]))
+            elapsed = t["ended"] - t["started"]
+            if elapsed > 0:
+                samples.setdefault(t["group_name"], []).append(elapsed)
+                pooled.append(elapsed)
     needed = {t["group_name"] for t in active + pending}
-    if any(len(samples.get(g, [])) < 3 for g in needed):
-        return {"seconds": None, "reason": "每个剩余实验组至少需要 3 个有计时的成功样本"}
     samples = {g: v[-30:] for g, v in samples.items()}
-    if any(now - t["started"] >= quantile(samples[t["group_name"]], 0.75) for t in active if t["started"] is not None):
-        return {"seconds": None, "reason": "当前任务已超出同组样本的估算范围，暂停外推"}
+    pooled, priors = pooled[-30:], priors or {}
+    durations, methods, sources = {}, set(), set()
+    for group in needed:
+        values = samples.get(group, [])
+        prior = priors.get(group) or priors.get("*")
+        if values:
+            if len(values) >= 3:
+                durations[group] = [quantile(values, 0.25), quantile(values, 0.75)]
+                methods.add("grouped")
+            else:
+                durations[group] = [min(values) * 0.5, max(values) * 2]
+                methods.add("few")
+        elif prior:
+            durations[group] = [prior["seconds"] * 0.5, prior["seconds"] * 2]
+            methods.add("prior")
+            sources.add(prior["source"])
+        elif pooled:
+            durations[group] = [quantile(pooled, 0.25) * 0.5, quantile(pooled, 0.75) * 2]
+            methods.add("pooled")
+        else:
+            return {"seconds": None, "reason": "尚无有计时的成功样本；可录入有依据的单次耗时预估，不必等待每组 3 次"}
+    # ponytail: early/overrun ranges are heuristics, not confidence intervals; calibrate with comparable historical runs when available.
+    for group in {t["group_name"] for t in active}:
+        age = max(max(0, now - (t["started"] or now)) for t in active if t["group_name"] == group)
+        limits = durations[group]
+        if age >= limits[1]:
+            limits[0] = max(limits[0], age * 1.25)
+            limits[1] = max(limits[1], age * 2)
+            methods.add("overrun")
     bounds = []
     # ponytail: greedy queue estimate assumes current concurrency and independent jobs; use the real scheduler when dependencies matter.
-    for q in (0.25, 0.75):
-        duration = {g: quantile(v, q) for g, v in samples.items()}
+    for index in (0, 1):
+        duration = {g: v[index] for g, v in durations.items()}
         slots = [max(0, duration[t["group_name"]] - max(0, now - (t["started"] or now))) for t in active]
         heapq.heapify(slots)
         for t in pending:
             heapq.heappush(slots, heapq.heappop(slots) + duration[t["group_name"]])
         bounds.append(max(slots))
-    reason = "最近至多 30 个同组成功样本的 25%–75% 分位耗时，按当前并发数估算；非置信区间"
+    title = "按组估计"
+    notes = []
+    if "grouped" in methods:
+        notes.append("有 3 个及以上同组样本的组使用最近至多 30 个样本的 25%–75% 分位耗时")
+    if "few" in methods:
+        title = "初步估计"
+        notes.append("部分组仅有 1–2 个同组样本，使用最短样本的 0.5 倍至最长样本的 2 倍作粗估")
+    if "prior" in methods:
+        title = "初始预估"
+        notes.append("无同组样本的组使用启动预估的 0.5–2 倍；依据：" + "；".join(sorted(sources)))
+    if "pooled" in methods:
+        title = "跨组粗估"
+        notes.append("无同组样本的任务暂借最近已完成任务的耗时，并扩大范围；组间差异可能使预测偏差很大")
+    if "overrun" in methods:
+        title = "动态粗估"
+        notes.append("有任务超出原范围，按该任务已运行时间的 1.25–2 倍上调同组单次总耗时")
     if not run["planned"]:
-        reason += "。未提供逐项计划，假定剩余任务与当前组相似"
-    return {"seconds": bounds, "reason": reason}
+        notes.append("未提供逐项计划，未报告任务沿用当前组或总体耗时")
+    notes.append("按当前并发数估算，范围不是置信区间或完成时限")
+    return {"seconds": bounds, "label": title, "reason": "。".join(notes)}
 
 
 def snapshot(key):
@@ -272,6 +342,7 @@ def snapshot(key):
             raise ValueError("轮次不存在")
         run = dict(row)
         tasks = [dict(x) for x in c.execute("SELECT * FROM tasks WHERE run_id=? ORDER BY rowid", (key,))]
+        priors = {x["group_name"]: dict(x) for x in c.execute("SELECT * FROM eta_priors WHERE run_id=?", (key,))}
     now = time.time()
     counts = {s: sum(t["state"] == s for t in tasks) for s in ("succeeded", "failed", "running", "pending")}
     if run["total"] is not None:
@@ -286,7 +357,7 @@ def snapshot(key):
                failures=[t for t in tasks if t["state"] == "failed"][:30],
                elapsed=max(0, (run["ended"] or now) - run["started"]),
                stale=run["status"] in ACTIVE and now - run["heartbeat"] > 12,
-               server_time=now, eta=estimate(run, tasks, now))
+               server_time=now, eta=estimate(run, tasks, now, priors))
     try:
         with open(run["log"], "rb") as f:
             f.seek(0, 2)
@@ -297,8 +368,9 @@ def snapshot(key):
     return run
 
 
-def serve():
-    token = secrets.token_urlsafe(32)
+def serve(reuse_address=False):
+    previous = json.loads((DATA / "server.json").read_text()) if reuse_address else {}
+    token = previous.get("token") or secrets.token_urlsafe(32)
     html = (SCRIPT.parent.parent / "assets/dashboard.html").read_bytes()
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -343,7 +415,7 @@ def serve():
                 return self.send(404, {"error": "Not found"})
             except (ValueError, sqlite3.Error) as exc:
                 return self.send(400, {"error": str(exc)})
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", urlsplit(previous.get("base", "")).port or 0), Handler)
     metadata = {"pid": os.getpid(), "base": "http://127.0.0.1:" + str(server.server_port), "token": token}
     tmp = DATA / ("server-" + str(os.getpid()) + ".tmp")
     tmp.write_text(json.dumps(metadata))
@@ -394,7 +466,8 @@ def launch(args):
         raise ValueError("指定进程不存在")
     url = ensure_server()
     key = create_run(args.name, args.cwd, args.total, plan, args.demo,
-                     args.log if args.action == "attach" else None, info[1] if info else None)
+                     args.log if args.action == "attach" else None, info[1] if info else None,
+                     args.estimate_seconds, args.estimate_source)
     child_args = [sys.executable, str(SCRIPT), "_supervise", "--run", key]
     if info:
         child_args += ["--pid", str(args.pid), "--identity", info[0]]
@@ -425,6 +498,8 @@ def main():
         p.add_argument("--cwd", default=os.getcwd())
         p.add_argument("--total", type=int)
         p.add_argument("--plan")
+        p.add_argument("--estimate-seconds", type=float, help="有依据的单次实验初始耗时预估，单位秒")
+        p.add_argument("--estimate-source", help="初始耗时预估的依据，与 --estimate-seconds 同时使用")
         p.add_argument("--demo", action="store_true")
         p.add_argument("--open", action="store_true")
         if name == "attach":
@@ -440,7 +515,13 @@ def main():
     p.add_argument("--ended-at", type=float)
     p = sub.add_parser("status")
     p.add_argument("--run", required=True)
-    sub.add_parser("_serve")
+    p = sub.add_parser("set-prior")
+    p.add_argument("--run", required=True)
+    p.add_argument("--seconds", type=float, required=True)
+    p.add_argument("--source", required=True)
+    p.add_argument("--group", default="*", help="省略时作为所有未采样组的预估")
+    p = sub.add_parser("_serve")
+    p.add_argument("--reuse-address", action="store_true")
     p = sub.add_parser("_supervise")
     p.add_argument("--run", required=True)
     p.add_argument("--pid", type=int)
@@ -459,8 +540,10 @@ def main():
             report(args.task, args.state, args.group, args.run, args.started_at, args.ended_at)
         elif args.action == "status":
             print(json.dumps(snapshot(args.run), ensure_ascii=False, indent=2))
+        elif args.action == "set-prior":
+            set_prior(args.run, args.seconds, args.source, args.group)
         elif args.action == "_serve":
-            serve()
+            serve(args.reuse_address)
         elif args.action == "_supervise":
             command = args.command[1:] if args.command and args.command[0] == "--" else args.command
             supervise(args.run, command, args.pid, args.identity)
