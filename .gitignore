@@ -8,3 +8,4 @@ __pycache__/
 server.json
 server.lock
 .demo-state/
+.claude/

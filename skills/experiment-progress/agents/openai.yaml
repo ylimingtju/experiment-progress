@@ -1,6 +1,6 @@
 interface:
   display_name: "实验进度"
-  short_description: "长实验自动接入本机面板，查看完成数量、运行时间、剩余时间和失败状态"
+  short_description: "长实验接入本机观测台：任务矩阵、完成曲线、剩余时间及其依据、失败状态"
   default_prompt: "使用 $experiment-progress 为这轮实验接入实时进度面板，并保留静默跟进。"
 policy:
   allow_implicit_invocation: true

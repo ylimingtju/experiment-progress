@@ -2,23 +2,25 @@
 
 [简体中文](README.md) · [MIT license](LICENSE)
 
-A local web dashboard for background experiments. It shows succeeded, failed, running, pending or unreported tasks, elapsed time, and an ETA when enough information is available. Use it through Codex, a command line, or Python.
+A local web dashboard for background experiments, with a task matrix, completion curve, group durations, and an ETA when enough information is available. Use it through Codex, a command line, or Python.
 
-![Dashboard generated from 15 synthetic tasks](docs/dashboard.png)
+![v1.0.0 dashboard: 15 synthetic tasks, a task matrix, and a completion curve](docs/dashboard.jpg)
 
-Only synthetic tasks appear in the screenshot. The demo should finish with 14 successes and one intentional failure.
+The screenshot uses 15 synthetic tasks in two groups, including a retry with the same ID and one intentional failure. The demo should finish with 14 successes and one failure.
+
+Search the task matrix by ID, hover over cells, or use arrow keys to inspect tasks. The page also offers a completion curve, a heuristic forecast range, group duration quantiles, light and dark themes, and a motion toggle. Browser completion notifications are optional.
 
 ## Requirements
 
 - Python 3.9+ and its standard library; no pip packages.
-- Tested on macOS for the initial release. Linux has not been verified. Windows is not supported; the code uses `fcntl` and `ps`.
+- Tested on macOS. Linux has not been verified. Windows is not supported; the code uses `fcntl` and `ps`.
 - A modern browser with `fetch` and `AbortSignal.timeout`. The dashboard and runtime messages are currently in Chinese; the usage instructions here cover the same features as the Chinese README.
 - Experiments run on the local computer. This release does not add remote-server monitoring or web buttons to stop or retry tasks.
 
 ## Install and use in Codex
 
 ```text
-$skill-installer Install https://github.com/ylimingtju/experiment-progress/tree/v0.2.0/skills/experiment-progress.
+$skill-installer Install https://github.com/ylimingtju/experiment-progress/tree/v1.0.0/skills/experiment-progress.
 ```
 
 ```text
@@ -39,7 +41,7 @@ export EXPERIMENT_PROGRESS_HOME="$(mktemp -d)"
 python3 "$EP" launch --demo --name "Demo experiments" --total 15 --open -- python3 "$PWD/skills/experiment-progress/scripts/demo.py"
 ```
 
-The demo takes about 20 seconds, uses a temporary state directory, and performs no research computation. It includes one intentional failure. The launcher prints `run_id`, a local `url`, and `data_dir`. `--open` opens the browser. If opening fails, use the printed address rather than launching the batch again. Keep the printed data directory if you want to revisit the demo after leaving the shell.
+The demo takes about 25 seconds, uses a temporary state directory, and performs no research computation. Its two groups include one intentional failure and a retry with the same ID. The launcher prints `run_id`, a local `url`, and `data_dir`. `--open` opens the browser. If opening fails, use the printed address rather than launching the batch again. Keep the printed data directory if you want to revisit the demo after leaving the shell.
 
 For real experiments, omit `--demo`, supply the actual working directory and command, and use the actual task plan. For example:
 
@@ -50,10 +52,13 @@ python3 "$EP" launch --name "Parameter comparison" --cwd /absolute/project --pla
 A plan is a JSON array:
 
 ```json
-[{"id":"case-001","group":"small"},{"id":"case-002","group":"large"}]
+[
+  {"id":"bo01/30-10-2/seed0","group":"n=30","params":{"algo":"bo01","inst":"30-10-2","seed":0}},
+  {"id":"bo02/60-10-2/seed0","group":"n=60","params":{"algo":"bo02","inst":"60-10-2","seed":0}}
+]
 ```
 
-The plan length supplies the total. Without a per-task plan, you can use `--total 120`; unreported tasks use the current single group or pooled samples from this run for a rough estimate. Supply the full plan when groups are known. Omit the total when it is unknown. The launched command must wait for all workers. Do not submit work and exit, add `nohup`, or append `&`.
+The plan length supplies the total. Optional `params` accepts up to 20 string or numeric values and is used only for ETA. Without it, parameters come from ID segments; `/` is the recommended separator. Without a per-task plan, you can use `--total 120`; unreported tasks use the current single group or pooled samples from this run for a rough estimate. Supply the full plan when groups are known. Omit the total when it is unknown. The launched command must wait for all workers. Do not submit work and exit, add `nohup`, or append `&`.
 
 ## Report task events
 
@@ -74,11 +79,16 @@ The launcher passes `EXPERIMENT_PROGRESS_RUN` and `EXPERIMENT_PROGRESS_HOME` to 
 
 ```sh
 python3 "$EP" dashboard --open
-python3 "$EP" status --run RUN_ID
+python3 "$EP" dashboard --restart --open
+python3 "$EP" status --run RUN_ID --brief
+python3 "$EP" list --limit 20
+python3 "$EP" backtest --run RUN_ID
 python3 "$EP" event running --run RUN_ID --task case-001 --group small
 python3 "$EP" event succeeded --run RUN_ID --task case-001
 python3 "$EP" attach --name "Existing experiment" --pid PID --cwd /absolute/project --total 120 --log /absolute/project/run.log
 ```
+
+Omit `--brief` from `status` for full JSON. `dashboard --restart` reloads only the web service, keeps the existing URL, and leaves experiments running. `backtest` reads completed runs with at least 10 timed tasks and reports interval coverage, median multiplicative point error, and interval width. Omit `--run` to check the latest 20 completed runs. Replay uses recorded start/end times and the parameters and priors currently saved; it cannot guarantee future ETA accuracy.
 
 `attach` observes an existing process without restarting it. It cannot obtain that process's exit code or parse arbitrary logs into task outcomes. Add task events or a read-only adapter separately. When the process exits, the outcome remains unknown; this does not prove that all experiments succeeded.
 
@@ -97,13 +107,14 @@ python3 "$EP" set-prior --run RUN_ID --group small --seconds 20 --source "Replac
 ## ETA, records, and access
 
 - Finished tasks include successes and failures. Exit code zero does not prove that every trial finished. Pending or unreported tasks remain visible.
-- With one or two valid successful timed samples in a group, the page shows an early estimate using half the shortest to twice the longest sample. At three or more samples, it uses the 25th–75th percentile durations of up to 30 recent same-group samples.
-- Without same-group samples, a group or shared prior takes priority: half to twice the supplied duration, labeled as an initial estimate with its source. Otherwise, it borrows up to 30 recent successful timed samples from this run, widens their 25th–75th percentile range to half its lower end through twice its upper end, and labels it a rough estimate across groups. Group differences may cause large errors.
-- Remaining time uses the current concurrency and waiting tasks, subtracting time already spent on active tasks. When a task reaches or exceeds the old upper end, the estimated total duration per task in its group increases to 1.25–2 times the age of that group's longest-running task. The page labels this a dynamic rough estimate. These heuristic ranges are not confidence intervals, theoretical guarantees, or deadlines.
-- ETA remains unknown without a total, active tasks, a current heartbeat, or either valid samples or a prior. Failed, untimed, and zero-duration events are excluded from timing samples.
+- ETA includes a point estimate and a heuristic range. One or two successful timed samples in a group produce an early estimate with a wider 0.5–2 range. Task duration uses a recency-weighted mean of up to 120 same-group successes, with a half-life of 30 samples. Failures contribute through their own durations and failure share, separately from successful durations.
+- Plan parameters or ID segments supply additive log-duration corrections. Faster or slower completed tasks with a shared value adjust the remaining tasks. Rare values shrink toward zero; unseen values use the recent effect for that parameter.
+- Without same-group samples, the order is a sourced group or shared prior, size extrapolation, similar-group borrowing, then an average across groups. Size extrapolation requires group names differing in only one number and at least two sampled groups in that family. Errors can be large; same-group samples replace these fallbacks once available.
+- Active-task remaining time uses same-group samples longer than the task's current age. Beyond almost all samples, it uses half the elapsed time and labels the estimate as dynamic and rough. A greedy queue at current concurrency combines active and waiting tasks. The range accounts for duration drift, task variation, and the estimation method; it is not a confidence interval, accuracy guarantee, or deadline.
+- ETA remains unknown without a total, active tasks, a current heartbeat, or either valid successful timing samples or a prior. Untimed and zero-duration records are excluded from duration samples.
 - The estimate assumes independent tasks, comparable durations within each group, and unchanged concurrency. Dependencies, changing worker counts, long solver tails, and computer sleep can invalidate it. Task-count progress is not elapsed-time progress.
 - The page reads the local service every two seconds without model calls. A stale heartbeat or read failure keeps the last data and shows a warning; it does not establish experiment failure.
-- State defaults to `~/.codex/experiment-progress/`. Set `EXPERIMENT_PROGRESS_HOME` for an isolated directory. The page shows the latest 50 runs, up to 30 task details per category, and roughly the last 8 KB of logs. The local database retains the full state.
+- State defaults to `~/.codex/experiment-progress/`. Set `EXPERIMENT_PROGRESS_HOME` for an isolated directory. The page shows the latest 50 runs, and the matrix contains all registered tasks. Running and failed details are limited to 30 each, and logs to roughly the last 8 KB. The local database retains the full state.
 - The service binds only to `127.0.0.1` and uses a temporary access token with Host/Origin checks. Do not publish dashboard URLs, `server.json`, real logs, or databases. These runtime files are not needed in the repository.
 
 ## Verify and report issues
@@ -112,12 +123,14 @@ python3 "$EP" set-prior --run RUN_ID --group small --seconds 20 --source "Replac
 python3 -B skills/experiment-progress/scripts/test_monitor.py
 ```
 
-The existing test checks counts, retries, concurrent writes, early/grouped/prior/overrun ETA, dashboard address reuse, stale heartbeats, HTTP access, detached launch, failed exits, and process observation. It uses a temporary state directory and stops its test service. It does not establish the scientific correctness of an experiment or verify Linux or Windows compatibility.
+The existing test checks counts, retries, concurrent writes, legacy SQL compatibility, task ordering, group statistics, parameter and size ETA, synthetic replay, service restart and URL reuse, stale heartbeats, HTTP access, detached launch, failed exits, and process observation. It uses a temporary state directory and stops its test service. Synthetic checks do not establish real-experiment ETA accuracy, scientific correctness, or Linux and Windows compatibility.
 
 ## Update from an older version
 
-The current version is `v0.2.0`; the initial `v0.1.0` tag is preserved. Keep custom edits before updating the skill. Do not delete the state directory. Database access adds the `eta_priors` table when needed and retains existing runs and tasks. Replacing files does not update a running service automatically. Restart the dashboard service at a suitable time and reopen the page; do not restart experiments just to update the dashboard.
+The current version is `v1.0.0`; the `v0.1.0` and `v0.2.0` tags are preserved. Keep custom edits before updating the skill. Do not delete the state directory. Database access adds `task_params` when needed and retains `runs`, `tasks`, and `eta_priors`. Existing experiment processes running older code can continue writing.
 
- For an issue, include the OS, Python version, a small synthetic task, and expected and observed states. Remove tokens, personal paths, and unpublished data.
+Replacing files does not update a running service automatically. After installing, run `python3 "$EP" dashboard --restart --open` to load the new page. This restarts only the web service, preserving its URL and access token while leaving experiment and supervisor processes running.
+
+For an issue, include the OS, Python version, a small synthetic task, and expected and observed states. Remove tokens, personal paths, and unpublished data.
 
 Author: [Liming Yang](https://github.com/ylimingtju). Released under the [MIT license](LICENSE).
