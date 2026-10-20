@@ -12,6 +12,10 @@
 
 侧栏观测台直接复用网页的 HTML，通过插件读取同一份本机记录；独立网页入口仍可使用。任务矩阵支持 ID 搜索和方向键查看，完整面板还提供分组统计、日志、主题和动效开关。
 
+## v1.1.1 更新
+
+观测台的任务矩阵在宽屏按双列排列分组，内容较多时内部滚动；键盘定位会将当前任务滚动到可见位置。分组表移除重复进度条，固定表头并支持内部滚动，窄屏保留全部状态计数。
+
 ## v1.1.0 更新
 
 - 进度的日常入口移到实验线程，完整观测台通过插件侧栏打开。仓库同时提供 skill 和可安装的插件。
@@ -29,7 +33,7 @@
 ## 在 Codex 安装和使用
 
 ```text
-$skill-installer 从 https://github.com/ylimingtju/experiment-progress/tree/v1.1.0/skills/experiment-progress 安装这个 skill。
+$skill-installer 从 https://github.com/ylimingtju/experiment-progress/tree/v1.1.1/skills/experiment-progress 安装这个 skill。
 ```
 
 ```text
@@ -45,7 +49,7 @@ $experiment-progress 为这轮后台实验接入实时进度，在实验线程�
 先安装上面的 skill，再添加本仓库的插件来源：
 
 ```sh
-codex plugin marketplace add ylimingtju/experiment-progress --ref v1.1.0
+codex plugin marketplace add ylimingtju/experiment-progress --ref v1.1.1
 ```
 
 在桌面宿主的插件目录中选择 **Experiment Progress** 来源，安装 **实验观测台**，再开新会话使用。来源登记及本地插件安装方式见 [OpenAI 官方插件说明](https://developers.openai.com/plugins/build/plugins)。本仓库发布的是 GitHub 插件来源。
@@ -161,7 +165,7 @@ EXPERIMENT_PROGRESS_SKILL="$PWD/skills/experiment-progress" python3 -B plugins/e
 
 ## 从旧版更新
 
-当前版本为 `v1.1.0`，已有版本标签保留。更新 skill 前保留自定义改动，不需要删除状态目录。读取数据库时按需新增 `eta_limits` 与 `eta_forecasts` 表，保留已有轮次、任务、参数和预估记录；旧版本实验进程可继续写入。
+当前版本为 `v1.1.1`，已有版本标签保留。更新 skill 前保留自定义改动，不需要删除状态目录。读取数据库时按需新增 `eta_limits` 与 `eta_forecasts` 表，保留已有轮次、任务、参数和预估记录；旧版本实验进程可继续写入。
 
 已经启动的服务不会因替换文件自动更新。安装后运行 `python3 "$EP" dashboard --restart --open` 载入新页面；这只重启网页服务，保留链接和访问令牌，不影响实验或其监测进程。
 

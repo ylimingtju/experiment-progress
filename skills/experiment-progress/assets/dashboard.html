@@ -192,6 +192,7 @@ h3 small{font:400 12px var(--sans);color:var(--muted);margin-left:8px;letter-spa
 .search input:focus{outline:2px solid var(--run);outline-offset:0;border-color:transparent}
 .search span{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:4em}
 .matrix-wrap{position:relative}
+.matrix-scroll{overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 #matrix{display:block;width:100%;border-radius:6px}
 #matrix:focus-visible{outline:2px solid var(--run);outline-offset:4px}
 .tip{position:absolute;z-index:3;pointer-events:none;background:var(--ink);color:var(--panel);padding:7px 10px;border-radius:8px;font-size:12px;line-height:1.5;transform:translate(-50%,calc(-100% - 10px));white-space:nowrap;box-shadow:0 6px 20px -8px rgba(0,0,0,.5)}
@@ -200,6 +201,9 @@ h3 small{font:400 12px var(--sans);color:var(--muted);margin-left:8px;letter-spa
 .muted-note{color:var(--muted);font-size:13px;padding:18px 0}
 .grid-2{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px}
 .grid-2>.section{margin-top:16px}
+#groups-section{display:flex;flex-direction:column}
+#groups-section .table-wrap{flex:1 1 auto;height:0;overflow:auto;overscroll-behavior:contain}
+.gtable thead th{position:sticky;top:0;z-index:1;background:var(--panel)}
 #curve{display:block;width:100%;height:230px}
 #curve text{font:10px var(--mono);fill:var(--faint)}
 table{border-collapse:collapse;width:100%;font-size:13px}
@@ -209,8 +213,6 @@ tr:last-child td{border-bottom:0}
 .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .id{font-family:var(--mono);font-size:12px}
 .gtable td:first-child{white-space:nowrap;overflow-wrap:normal}
-.gbar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--wait);min-width:70px}
-.gbar i{display:block;height:100%}
 .range svg{display:block;width:110px;height:14px}
 .range small{display:block;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .table-wrap{overflow-x:auto}
@@ -234,9 +236,9 @@ footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;color:v
 #confetti{position:fixed;inset:0;pointer-events:none;z-index:50;width:100vw;height:100vh}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
-@media (max-width:1180px){.readouts{grid-template-columns:1fr 1fr}.readout:nth-child(3){padding-left:0;border-left:0}.readout:nth-child(n+3){border-top:1px solid var(--line-2)}.grid-2{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:1180px){.readouts{grid-template-columns:1fr 1fr}.readout:nth-child(3){padding-left:0;border-left:0}.readout:nth-child(n+3){border-top:1px solid var(--line-2)}.grid-2{grid-template-columns:minmax(0,1fr)}#groups-section .table-wrap{height:auto;max-height:320px}}
 @media (max-width:900px){.app{grid-template-columns:1fr}.rail{display:none}.mobile-pick{display:block;flex-basis:100%}.tools{margin-left:0}main{padding:16px 16px 30px}}
-@media (max-width:560px){.hero{padding:20px 18px}.section{padding:16px}.dbody{padding:0 16px 16px}details>summary{padding:14px 16px}.value{font-size:26px}.value.medium{font-size:18px;line-height:1.75}.readout{padding-right:10px}.readout+.readout{padding-left:10px}.readout:nth-child(3){padding-left:0}.mascot{width:52px;height:52px}.bubble{display:none}.search input{width:140px}.gtable th:nth-child(2),.gtable td:nth-child(2){display:none}.kv{grid-template-columns:max-content minmax(0,1fr)}.kv .copy{display:none}}
+@media (max-width:560px){.hero{padding:20px 18px}.section{padding:16px}.dbody{padding:0 16px 16px}details>summary{padding:14px 16px}.value{font-size:26px}.value.medium{font-size:18px;line-height:1.75}.readout{padding-right:10px}.readout+.readout{padding-left:10px}.readout:nth-child(3){padding-left:0}.mascot{width:52px;height:52px}.bubble{display:none}.search input{width:140px}.kv{grid-template-columns:max-content minmax(0,1fr)}.kv .copy{display:none}}
 @media (pointer:coarse){.chip-btn,.mobile-pick select,.search input{min-height:40px}}
 </style>
 </head>
@@ -293,13 +295,13 @@ footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;color:v
     <section class="card section">
       <div class="sec-head"><h3>任务矩阵<small id="matrix-sub">每格一个实验</small></h3>
         <label class="search"><span class="sr">按实验 ID 搜索</span><input id="search" type="search" placeholder="搜索实验 ID　/" autocomplete="off" spellcheck="false"><span id="search-count"></span></label></div>
-      <div class="matrix-wrap" id="matrix-wrap"><canvas id="matrix" tabindex="0" role="img" aria-label="任务矩阵"></canvas><div id="tip" class="tip" hidden></div></div>
+      <div class="matrix-wrap" id="matrix-wrap"><div class="matrix-scroll" id="matrix-scroll"><canvas id="matrix" tabindex="0" role="img" aria-label="任务矩阵"></canvas></div><div id="tip" class="tip" hidden></div></div>
       <p id="matrix-empty" class="muted-note" hidden></p>
     </section>
 
     <div class="grid-2">
       <section class="card section"><div class="sec-head"><h3>完成曲线<small>累计结束数随时间</small></h3></div><svg id="curve" role="img" aria-label="累计完成曲线"></svg><p id="curve-empty" class="muted-note" hidden>首个任务结束后显示曲线。</p></section>
-      <section class="card section" id="groups-section"><div class="sec-head"><h3 id="groups-heading">实验分组</h3></div><div class="table-wrap"><table class="gtable"><thead><tr><th>组别</th><th class="gcol">进度</th><th class="num">成功</th><th class="num">失败</th><th class="num">运行</th><th class="num">等待</th><th>单次耗时</th></tr></thead><tbody id="groups"></tbody></table></div></section>
+      <section class="card section" id="groups-section"><div class="sec-head"><h3 id="groups-heading">实验分组</h3></div><div class="table-wrap"><table class="gtable"><thead><tr><th>组别</th><th class="num">成功</th><th class="num">失败</th><th class="num">运行</th><th class="num">等待</th><th>单次耗时</th></tr></thead><tbody id="groups"></tbody></table></div></section>
     </div>
 
     <section class="card section" id="active-section"><div class="sec-head"><h3 id="active-heading">正在运行</h3></div><div class="table-wrap"><table><thead><tr><th>实验 ID</th><th>组别</th><th class="num">本次耗时</th><th class="num">尝试</th></tr></thead><tbody id="active"></tbody></table></div></section>
@@ -440,13 +442,20 @@ function buildMatrix(){
   M.cells=cells;M.sections=sections;layoutMatrix();
 }
 function layoutMatrix(){
-  const W=Math.max(200,canvas.parentElement.clientWidth),n=M.cells.length,head=24,pad=12;M.width=W;
-  const maxH=Math.max(220,Math.min(420,innerHeight*.5));
-  const fit=s=>{const gap=s>=8?2:1,cols=Math.max(1,Math.floor((W+gap)/(s+gap)));let h=0;for(const sec of M.sections)h+=head+Math.ceil(Math.max(1,sec.end-sec.start)/cols)*(s+gap)+pad;return {s,gap,cols,h};};
-  let best=null;for(const s of [18,16,14,12,11,10,9,8,7,6,5,4,3]){best=fit(s);if(best.h<=maxH)break;}
+  const W=Math.max(200,canvas.parentElement.clientWidth),head=24,pad=12;M.width=W;
+  // Groups sit side by side in two columns when there is room; the panel keeps a fixed height and scrolls.
+  const maxH=Math.max(240,Math.min(420,innerHeight*.5)),lanes=W>=560&&M.sections.length>1?2:1,laneGap=28,laneW=(W-laneGap*(lanes-1))/lanes;
+  $('matrix-scroll').style.maxHeight=maxH+'px';
+  const rowsOf=(sec,cols)=>Math.ceil(Math.max(1,sec.end-sec.start)/cols);
+  const fit=s=>{const gap=s>=8?2:1,cols=Math.max(1,Math.floor((laneW+gap)/(s+gap)));let h=0;for(let j=0;j<M.sections.length;j+=lanes)h+=head+Math.max(...M.sections.slice(j,j+lanes).map(sec=>rowsOf(sec,cols)))*(s+gap)+pad;return {s,gap,cols,h};};
+  let best=null;for(const s of [18,16,14,12,11,10,9,8]){best=fit(s);if(best.h<=maxH)break;}
   if(!best)best={s:10,gap:2,cols:1,h:40};
   M.size=best.s;M.gap=best.gap;M.cols=best.cols;let y=0;
-  for(const sec of M.sections){sec.y=y;y+=head;for(let i=sec.start;i<sec.end;i++){const k=i-sec.start;M.cells[i].x=(k%best.cols)*(best.s+best.gap);M.cells[i].y=y+Math.floor(k/best.cols)*(best.s+best.gap);}y+=Math.ceil(Math.max(1,sec.end-sec.start)/best.cols)*(best.s+best.gap)+pad;}
+  for(let j=0;j<M.sections.length;j+=lanes){
+    const row=M.sections.slice(j,j+lanes);
+    row.forEach((sec,lane)=>{sec.x=lane*(laneW+laneGap);sec.y=y;for(let i=sec.start;i<sec.end;i++){const k=i-sec.start;M.cells[i].x=sec.x+(k%best.cols)*(best.s+best.gap);M.cells[i].y=y+head+Math.floor(k/best.cols)*(best.s+best.gap);}});
+    y+=head+Math.max(...row.map(sec=>rowsOf(sec,best.cols)))*(best.s+best.gap)+pad;
+  }
   M.height=Math.max(40,y-pad+2);const dpr=devicePixelRatio||1;
   canvas.style.height=M.height+'px';canvas.width=Math.round(W*dpr);canvas.height=Math.round(M.height*dpr);
   drawMatrix();
@@ -459,8 +468,8 @@ function drawMatrix(t=performance.now()){
   ctx.textBaseline='middle';ctx.font='500 12px '+P.sans;
   for(const sec of M.sections){
     const items=M.cells.slice(sec.start,sec.end),done=items.filter(c=>c.st>=2).length;
-    ctx.fillStyle=P.ink;ctx.textAlign='left';ctx.fillText(sec.name,0,sec.y+10);const w=ctx.measureText(sec.name).width;
-    ctx.fillStyle=P.muted;ctx.font='11px '+P.mono;ctx.fillText(`${done}/${items.length}`,w+10,sec.y+10);ctx.font='500 12px '+P.sans;
+    ctx.fillStyle=P.ink;ctx.textAlign='left';ctx.fillText(sec.name,sec.x,sec.y+10);const w=ctx.measureText(sec.name).width;
+    ctx.fillStyle=P.muted;ctx.font='11px '+P.mono;ctx.fillText(`${done}/${items.length}`,sec.x+w+10,sec.y+10);ctx.font='500 12px '+P.sans;
   }
   const fill=[P.wait,P.run,P.ok,P.bad],r=Math.min(3,s/4);
   for(let i=0;i<M.cells.length;i++){
@@ -493,8 +502,10 @@ function showTip(i){
   tip.replaceChildren(...lines.map(([tag,v],k)=>{const el=document.createElement(tag);el.textContent=v;if(k){el.style.display='block';}return el;}));
   tip.hidden=false;
   const W=M.width,x=Math.min(W-90,Math.max(90,c.x+M.size/2));
-  tip.style.left=x+'px';tip.style.top=c.y+'px';
+  tip.style.left=x+'px';tip.style.top=(c.y-$('matrix-scroll').scrollTop)+'px';
 }
+function reveal(i){const sc=$('matrix-scroll'),c=M.cells[i];if(c.y<sc.scrollTop)sc.scrollTop=c.y-30;else if(c.y+M.size>sc.scrollTop+sc.clientHeight)sc.scrollTop=c.y+M.size-sc.clientHeight+6;}
+$('matrix-scroll').addEventListener('scroll',()=>{if(M.hover>=0||M.focus>=0)showTip(M.focus>=0?M.focus:M.hover);},{passive:true});
 canvas.addEventListener('pointermove',e=>{const b=canvas.getBoundingClientRect();const i=cellAt(e.clientX-b.left,e.clientY-b.top);if(i!==M.hover){M.hover=i;M.focus=-1;showTip(i);drawMatrix();}});
 canvas.addEventListener('pointerleave',()=>{M.hover=-1;if(M.focus<0)showTip(-1);drawMatrix();});
 canvas.addEventListener('blur',()=>{M.focus=-1;showTip(-1);drawMatrix();});
@@ -505,7 +516,7 @@ canvas.addEventListener('keydown',e=>{
   else if(e.key==='ArrowDown')i=near(1);else if(e.key==='ArrowUp')i=near(-1);
   else if(e.key==='Home')i=0;else if(e.key==='End')i=M.cells.length-1;
   else if(e.key==='Escape'){M.focus=-1;showTip(-1);drawMatrix();return;}else return;
-  e.preventDefault();M.focus=i;showTip(i);drawMatrix();
+  e.preventDefault();M.focus=i;reveal(i);showTip(i);drawMatrix();
 });
 $('search').addEventListener('input',e=>{M.query=e.target.value.trim().toLowerCase();const n=M.query?M.cells.filter(matches).length:0;text('search-count',M.query?`${n} 项`:'');drawMatrix();});
 addEventListener('keydown',e=>{if(e.key==='/'&&!/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)){e.preventDefault();$('search').focus();}});
@@ -652,12 +663,10 @@ function render(r){
   const gs=r.groups||[];$('groups-section').hidden=!gs.length;text('groups-heading',r.planned?'实验分组':'已报告的实验组');
   const maxD=Math.max(1,...gs.map(g=>g.p75||0))*1.15;
   rows('groups',gs.map(g=>{
-    const bar=document.createElement('div');bar.className='gbar';const n=g.registered||1;
-    for(const [k,col] of [['succeeded','var(--ok)'],['failed','var(--bad)'],['running','var(--run)']]){const i=document.createElement('i');i.style.width=(100*g[k]/n)+'%';i.style.background=col;bar.append(i);}
     const cell=document.createElement('div');cell.className='range';
     if(g.median!=null){const s=v=>(4+v/maxD*102).toFixed(1);cell.innerHTML=`<svg viewBox="0 0 110 14" aria-hidden="true"><line x1="4" x2="106" y1="7" y2="7" stroke="var(--line)"/><line x1="${s(g.p25)}" x2="${s(g.p75)}" y1="7" y2="7" stroke="var(--run)" stroke-width="5" stroke-linecap="round" opacity=".45"/><circle cx="${s(g.median)}" cy="7" r="3" fill="var(--ink)"/></svg>`;const sm=document.createElement('small');sm.textContent=`中位 ${short(g.median)}${g.samples>=3?` · ${short(g.p25)}–${short(g.p75)}`:''} · n=${g.samples}`;cell.append(sm);}
     else{const sm=document.createElement('small');sm.textContent='尚无计时样本';cell.append(sm);}
-    return [g.name,bar,g.succeeded,g.failed,g.running,g.pending,cell];}));
+    return [g.name,g.succeeded,g.failed,g.running,g.pending,cell];}),1);
   // active / failures
   $('active-section').hidden=!r.active.length;text('active-heading',live?`正在运行${r.active.length>=30?'（最多显示 30 项）':''}`:'最后记录为运行中（状态待核验）');
   $('failures-section').hidden=!c.failed;text('failures-label',`${c.failed} 项${c.failed>30?' · 最多显示 30 项':''}`);

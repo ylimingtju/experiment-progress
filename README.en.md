@@ -12,6 +12,10 @@ The card preview uses isolated synthetic records; Codex supplies the surrounding
 
 The sidebar observatory reuses the web dashboard's HTML and reads the same records through the plugin. The standalone web page remains available. The full view includes ID search, keyboard task inspection, group statistics, logs, themes, and a motion toggle.
 
+## Changes in v1.1.1
+
+The observatory arranges task groups in two columns on wide screens and scrolls within the matrix when needed. Keyboard navigation brings the selected task into view. The group table removes duplicate progress bars, keeps its header visible while scrolling, and retains all state counts on narrow screens.
+
 ## Changes in v1.1.0
 
 - The chat card is the routine progress view, with the full observatory in the plugin sidebar. This repository now includes both the skill and an installable plugin.
@@ -29,7 +33,7 @@ The sidebar observatory reuses the web dashboard's HTML and reads the same recor
 ## Install and use in Codex
 
 ```text
-$skill-installer Install https://github.com/ylimingtju/experiment-progress/tree/v1.1.0/skills/experiment-progress.
+$skill-installer Install https://github.com/ylimingtju/experiment-progress/tree/v1.1.1/skills/experiment-progress.
 ```
 
 ```text
@@ -45,7 +49,7 @@ See the [official OpenAI instructions](https://learn.chatgpt.com/docs/build-skil
 Install the skill above, then add this repository as a plugin source:
 
 ```sh
-codex plugin marketplace add ylimingtju/experiment-progress --ref v1.1.0
+codex plugin marketplace add ylimingtju/experiment-progress --ref v1.1.1
 ```
 
 In the desktop host's plugin directory, select the **Experiment Progress** source, install **实验观测台**, and start a new chat. See the [official OpenAI plugin instructions](https://developers.openai.com/plugins/build/plugins) for marketplace registration and local installation. This repository distributes a GitHub plugin source.
@@ -161,7 +165,7 @@ Tests use isolated temporary directories. The skill test covers counts, retries,
 
 ## Update from an older version
 
-The current version is `v1.1.0`; previous tags are preserved. Keep custom edits before updating the skill. Do not delete the state directory. Database access adds `eta_limits` and `eta_forecasts` when needed, retaining existing runs, tasks, parameters, and priors. Existing experiment processes running older code can continue writing.
+The current version is `v1.1.1`; previous tags are preserved. Keep custom edits before updating the skill. Do not delete the state directory. Database access adds `eta_limits` and `eta_forecasts` when needed, retaining existing runs, tasks, parameters, and priors. Existing experiment processes running older code can continue writing.
 
 Replacing files does not update a running service automatically. After installing, run `python3 "$EP" dashboard --restart --open` to load the new page. This restarts only the web service, preserving its URL and access token while leaving experiment and supervisor processes running.
 
