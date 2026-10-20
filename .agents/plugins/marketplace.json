@@ -1,0 +1,20 @@
+{
+  "name": "ylm-experiment-progress",
+  "interface": {
+    "displayName": "Experiment Progress"
+  },
+  "plugins": [
+    {
+      "name": "experiment-progress",
+      "source": {
+        "source": "local",
+        "path": "./plugins/experiment-progress"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Research"
+    }
+  ]
+}

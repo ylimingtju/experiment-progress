@@ -1,0 +1,36 @@
+{
+  "name": "experiment-progress",
+  "version": "0.1.3",
+  "description": "Live experiment track and observatory for long local experiments, backed by the experiment-progress skill.",
+  "author": {
+    "name": "Liming Yang"
+  },
+  "license": "MIT",
+  "keywords": [
+    "experiments",
+    "progress",
+    "eta",
+    "mcp",
+    "mcp-app"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "实验观测台",
+    "shortDescription": "长实验的实时跑道与观测台",
+    "longDescription": "在实验线程里放一条实时刷新的进度跑道：一只像素小狼按完成比例奔跑，显示已结束数、预计剩余（模型研判或算法估计）和最迟时间，悬停展开详情。侧栏提供完整观测台：所有轮次、任务矩阵、完成曲线、分组耗时和日志。数据来自本机 experiment-progress 记录，只读。",
+    "developerName": "Liming Yang",
+    "category": "Research",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "defaultPrompt": [
+      "在这个线程里放上当前实验的进度跑道",
+      "打开实验观测台"
+    ],
+    "brandColor": "#2D7C5F",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg",
+    "logoDark": "./assets/icon-dark.svg"
+  }
+}

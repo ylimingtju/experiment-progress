@@ -59,6 +59,16 @@ def db():
             run_id TEXT NOT NULL, id TEXT NOT NULL, params TEXT NOT NULL,
             PRIMARY KEY (run_id, id)
           );
+          CREATE TABLE IF NOT EXISTS eta_limits (
+            run_id TEXT NOT NULL, group_name TEXT NOT NULL,
+            seconds REAL NOT NULL, source TEXT NOT NULL,
+            PRIMARY KEY (run_id, group_name)
+          );
+          CREATE TABLE IF NOT EXISTS eta_forecasts (
+            run_id TEXT NOT NULL, at REAL NOT NULL, ended INTEGER NOT NULL,
+            remaining REAL NOT NULL, low REAL, high REAL, basis TEXT NOT NULL,
+            PRIMARY KEY (run_id, at)
+          );
         """)
         with conn:
             yield conn
@@ -100,11 +110,42 @@ def set_prior(run_id, seconds, source, group="*"):
         c.execute("INSERT OR REPLACE INTO eta_priors VALUES (?,?,?,?)", (run_id, group, seconds, source))
 
 
+def set_limit(run_id, seconds, source, group="*"):
+    """Per-task time limit (e.g. a solver TimeLimit): no task of the group is expected to run longer."""
+    validate_prior(seconds, source)
+    run_key(run_id)
+    label(group)
+    with db() as c:
+        row = c.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()
+        if not row or row["status"] not in ACTIVE:
+            raise ValueError("实验轮次不存在或已经结束")
+        c.execute("INSERT OR REPLACE INTO eta_limits VALUES (?,?,?,?)", (run_id, group, seconds, source))
+
+
+def record_forecast(run_id, remaining, basis, low=None, high=None):
+    """A model's judgment of the time left, written during an existing silent follow-up."""
+    for value in (remaining, low, high):
+        if value is not None and (not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0):
+            raise ValueError("剩余时间必须为正数秒")
+    if not (low or remaining) <= remaining <= (high or remaining):
+        raise ValueError("须满足 low ≤ remaining ≤ high")
+    label(basis)
+    with db() as c:
+        row = c.execute("SELECT status FROM runs WHERE id=?", (run_key(run_id),)).fetchone()
+        if not row or row["status"] not in ACTIVE:
+            raise ValueError("实验轮次不存在或已经结束")
+        ended = c.execute("SELECT count(*) FROM tasks WHERE run_id=? AND state IN ('succeeded','failed')", (run_id,)).fetchone()[0]
+        c.execute("INSERT OR REPLACE INTO eta_forecasts VALUES (?,?,?,?,?,?,?)",
+                  (run_id, time.time(), ended, remaining, low, high, basis))
+
+
 def create_run(name, cwd, total=None, plan=None, demo=False, log=None, started=None,
-               estimate_seconds=None, estimate_source=None):
+               estimate_seconds=None, estimate_source=None, limit_seconds=None, limit_source=None):
     label(name)
     if estimate_seconds is not None or estimate_source is not None:
         validate_prior(estimate_seconds, estimate_source)
+    if limit_seconds is not None or limit_source is not None:
+        validate_prior(limit_seconds, limit_source)
     if total is not None and (type(total) is not int or total < 1):
         raise ValueError("总实验数必须为正整数，未知时省略")
     cwd = Path(cwd).resolve(strict=True)
@@ -139,6 +180,8 @@ def create_run(name, cwd, total=None, plan=None, demo=False, log=None, started=N
         c.executemany("INSERT INTO task_params VALUES (?,?,?)", [(key, task_id, p) for task_id, p in params])
         if estimate_seconds is not None:
             c.execute("INSERT INTO eta_priors VALUES (?,?,?,?)", (key, "*", estimate_seconds, estimate_source))
+        if limit_seconds is not None:
+            c.execute("INSERT INTO eta_limits VALUES (?,?,?,?)", (key, "*", limit_seconds, limit_source))
     return key
 
 
@@ -323,13 +366,13 @@ def power_fit(points, x):
     return math.exp(my + slope * (math.log(x) - mx)), spread
 
 
-Z = 1.645
+Z = 0.674  # about half of outcomes inside the range; the backtest reports the real share
 WINDOW = 120
 ETA_TITLES = {"grouped": "按组估计", "few": "初步估计", "scaled": "规模外推", "prior": "初始预估",
               "similar": "相近组借用", "pooled": "跨组粗估"}
 
 
-def estimate(run, tasks, now, priors=None, params=None):
+def estimate(run, tasks, now, priors=None, params=None, limits=None):
     if run["status"] not in ACTIVE or now - run["heartbeat"] > 12:
         return {"seconds": None, "reason": "轮次未运行或监测信号中断"}
     active = [t for t in tasks if t["state"] == "running"]
@@ -373,12 +416,29 @@ def estimate(run, tasks, now, priors=None, params=None):
     for t in tasks:
         if t["state"] == "failed":
             failures[t["group_name"]] = failures.get(t["group_name"], 0) + 1
+    # Per-task time limits: given ones, else one inferred when several tasks stop at the same maximum
+    # (a solver TimeLimit piles durations up just above it). Solver wrap-up may overshoot a given limit slightly.
+    limits, spans = limits or {}, [t["ended"] - t["started"] for t in timed]
+    top = max(spans, default=0)
+    piled = sum(d >= top * 0.998 for d in spans)
+    inferred = top if top >= 60 and piled >= 3 else None
+    caps = {}
+
+    def cap(g):
+        if g not in caps:
+            given = limits.get(g) or limits.get("*")
+            caps[g] = (max([given["seconds"]] + [d for d in spans if given["seconds"] <= d <= given["seconds"] * 1.05])
+                       if given else inferred)
+        return caps[g]
     # Per group: base seconds of a task with average parameters, relative systematic error, per-task variance,
-    # failure share and mean failure seconds.
+    # failure share, mean failure seconds and the share of runs that hit the time limit. A run stopped by the limit
+    # is censored: its parameters say nothing about how much longer it would have taken, so it is not rescaled.
+    hits = lambda t, limit: bool(limit) and t["ended"] - t["started"] >= limit * 0.998
     model, methods, sources, borrowed = {}, set(), set(), []
     for g, ts in succ.items():
         ts = ts[-WINDOW:]
-        values = [(t["ended"] - t["started"]) / factor(t) for t in ts]
+        free = [t for t in ts if not hits(t, cap(g))]
+        values = [(t["ended"] - t["started"]) / factor(t) for t in (free or ts)]
         base, n = weighted_mean(values), len(values)
         share = failures.get(g, 0) / (failures.get(g, 0) + len(succ[g]))
         lost = sum(fail[g][-WINDOW:]) / len(fail[g][-WINDOW:]) if fail.get(g) else base
@@ -390,8 +450,8 @@ def estimate(run, tasks, now, priors=None, params=None):
         else:
             spread = 0.35 if n >= 3 else math.log(2) / Z
         variance = sum((x - base) ** 2 for x in values) / n if n > 1 else base ** 2
-        model[g] = [base, spread, variance, share, lost]
-        methods.add("grouped" if n >= 3 else "few")
+        model[g] = [base, spread, variance, share, lost, 1 - len(free) / len(ts)]
+        methods.add("grouped" if len(ts) >= 3 else "few")
     own = dict(model)
     families = {}
     for g, m in own.items():
@@ -406,12 +466,12 @@ def estimate(run, tasks, now, priors=None, params=None):
                 for k in [(tuple(tk[:i]), tuple(tk[i + 1:]))] if len(families.get(k, {})) >= 2]
         fits = [f for f in fits if f]
         if prior:
-            model[g] = [prior["seconds"], math.log(2) / Z, 0, 0, 0]
+            model[g] = [prior["seconds"], math.log(2) / Z, 0, 0, 0, 0]
             methods.add("prior")
             sources.add(prior["source"])
         elif fits:
             mean, spread = min(fits, key=lambda f: f[1])
-            model[g] = [mean, 0.3 + spread, mean ** 2 * 0.1, 0, 0]
+            model[g] = [mean, 0.3 + spread, mean ** 2 * 0.1, 0, 0, 0]
             methods.add("scaled")
         elif own:
             shared = {h: len(set(tk) & set(tokens(h))) for h in own}
@@ -419,34 +479,47 @@ def estimate(run, tasks, now, priors=None, params=None):
             donors = sorted(h for h, s in shared.items() if s == best) if best else []
             if donors:
                 mean = math.exp(sum(math.log(own[h][0]) for h in donors) / len(donors))
-                model[g] = [mean, 0.6, mean ** 2, 0, 0]
+                model[g] = [mean, 0.6, mean ** 2, 0, 0, 0]
                 methods.add("similar")
                 borrowed.append(f"{g} ← {'、'.join(donors[:2])}")
             else:
                 mean = sum(m[0] for m in own.values()) / len(own)
-                model[g] = [mean, 1.0, mean ** 2, 0, 0]
+                model[g] = [mean, 1.0, mean ** 2, 0, 0, 0]
                 methods.add("pooled")
         else:
             return {"seconds": None, "reason": "尚无有计时的成功样本；可录入有依据的单次耗时预估，不必等待每组 3 次"}
+    for g, m in model.items():
+        if cap(g):
+            m[0], m[2], m[4] = min(m[0], cap(g)), min(m[2], cap(g) ** 2 / 4), min(m[4], cap(g))
 
     def expected(t):
-        base, _, _, share, lost = model[t["group_name"]]
-        return (1 - share) * base * factor(t) + share * lost
+        base, _, _, share, lost, hit = model[t["group_name"]]
+        limit = cap(t["group_name"])
+        typical = min(base * factor(t), limit or math.inf)
+        return (1 - share) * (hit * limit + (1 - hit) * typical if limit else typical) + share * lost
 
     overdue = []
+    age = lambda t: max(0, now - (t["started"] or now))
 
     def remaining(t):
+        limit = cap(t["group_name"])
+        if limit and age(t) >= limit:
+            methods.add("overlimit")
+            return limit * 0.05
         # Mean remaining time among this group's past successes that ran longer than this task has so far.
-        age, scale = max(0, now - (t["started"] or now)), factor(t)
-        longer = [(x["ended"] - x["started"]) / factor(x) * scale - age for x in succ.get(t["group_name"], [])[-WINDOW:]]
+        scale = factor(t)
+        longer = [(x["ended"] - x["started"] if hits(x, limit) else (x["ended"] - x["started"]) / factor(x) * scale) - age(t)
+                  for x in succ.get(t["group_name"], [])[-WINDOW:]]
         longer = [x for x in longer if x > 0]
         if len(longer) >= 3:
-            return sum(longer) / len(longer)
-        if age > expected(t):
+            left = sum(longer) / len(longer)
+        elif age(t) > expected(t):
             methods.add("overrun")
-            overdue.append(age * 0.5)
-            return age * 0.5
-        return max(expected(t) - age, age * 0.5)
+            overdue.append(age(t) * 0.5)
+            left = age(t) * 0.5
+        else:
+            left = max(expected(t) - age(t), age(t) * 0.5)
+        return min(left, limit - age(t)) if limit else left
     # ponytail: greedy queue estimate assumes current concurrency and independent jobs; use the real scheduler when dependencies matter.
     slots, load, count = [], {}, {}
     for t in active + pending:
@@ -463,13 +536,27 @@ def estimate(run, tasks, now, priors=None, params=None):
     # an overdue task's remaining time counts as fully uncertain (relative sd 1).
     spread = math.sqrt(sum((load[g] * model[g][1]) ** 2 + count[g] * model[g][2] for g in load)
                        + sum(x ** 2 for x in overdue)) / work if work > 0 else 0
-    bounds = [round(point * math.exp(-Z * spread), 1), round(point * math.exp(Z * spread), 1)]
+    bounds = [point * math.exp(-Z * spread), point * math.exp(Z * spread)]
+    latest = None
+    if all(cap(t["group_name"]) for t in active + pending):
+        # Every remaining task runs to its limit: a hard ceiling under the current concurrency.
+        slots = []
+        for t in active + pending:
+            limit = cap(t["group_name"])
+            if t.get("state") == "running":
+                heapq.heappush(slots, max(limit - age(t), limit * 0.05))
+            else:
+                heapq.heapreplace(slots, slots[0] + limit)
+        latest = max(slots)
+        point, bounds = min(point, latest), [min(bounds[0], latest), min(bounds[1], latest)]
+    bounds = [round(x, 1) for x in bounds]
+    limited = sorted({str(cap(t["group_name"])) for t in active + pending if cap(t["group_name"])})
     used = sorted({k.split("=")[0] for t in active + pending for k in keys.get(t.get("id"), [])
                    if abs(effect.get(k, 0)) > 0.01})
     if used:
         methods.add("params")
     order = ["grouped", "few", "scaled", "prior", "similar", "pooled"]
-    title = "动态粗估" if "overrun" in methods else ETA_TITLES[max((m for m in methods if m in ETA_TITLES), key=order.index)]
+    title = "动态粗估" if methods & {"overrun", "overlimit"} else ETA_TITLES[max((m for m in methods if m in ETA_TITLES), key=order.index)]
     notes = []
     if methods & {"grouped", "few"}:
         notes.append("单项耗时取同组最近至多 120 个成功样本的近期加权平均；失败任务按其自身耗时计入")
@@ -486,13 +573,47 @@ def estimate(run, tasks, now, priors=None, params=None):
         notes.append("无样本的组借用组名最相近的组：" + "；".join(borrowed[:3]) + ("等" if len(borrowed) > 3 else ""))
     if "pooled" in methods:
         notes.append("无样本且找不到相近组的任务暂借全部组的平均耗时，偏差可能很大")
+    limit_text = None
+    if limited:
+        given = sorted({f"{x['seconds']:g} 秒（{x['source']}）" for x in limits.values()})
+        limit_text = ("单项时限 " + "；".join(given) if given else
+                      f"推断单项时限约 {inferred:.0f} 秒（{piled} 个任务停在该值附近）")
+        notes.append(limit_text + "：每项估计不超过时限")
     if "overrun" in methods:
         notes.append("有任务已超过同组常见耗时，按其已运行时间的一半估计剩余")
+    if "overlimit" in methods:
+        notes.append("有任务已达到单项时限，按很快结束估计")
     if not run["planned"]:
         notes.append("未提供逐项计划，未报告任务沿用当前组或总体耗时")
-    notes.append("按当前并发数排队估算；范围为启发式，不是置信区间或完成时限")
-    return {"seconds": bounds, "point": round(point, 1), "label": title, "reason": "。".join(notes),
-            "methods": sorted(methods)}
+    notes.append("按当前并发数排队估算；大概率范围约有一半把握（启发式），不是置信区间" +
+                 ("；最迟时间按所有剩余任务跑满时限计" if latest else ""))
+    return {"seconds": bounds, "point": round(point, 1), "latest": round(latest, 1) if latest else None, "limit": limit_text,
+            "label": title, "reason": "。".join(notes), "methods": sorted(methods)}
+
+
+def eta_inputs(c, key):
+    """Priors, task parameters and time limits stored beside a run."""
+    priors = {x["group_name"]: dict(x) for x in c.execute("SELECT * FROM eta_priors WHERE run_id=?", (key,))}
+    params = {x["id"]: json.loads(x["params"]) for x in c.execute("SELECT id,params FROM task_params WHERE run_id=?", (key,))}
+    limits = {x["group_name"]: dict(x) for x in c.execute("SELECT * FROM eta_limits WHERE run_id=?", (key,))}
+    return priors, params, limits
+
+
+FORECAST_FRESH = 3 * 3600
+
+
+def forecast_view(row, live, now):
+    """The latest model forecast, counted down from when it was made; it leads only while fresh."""
+    if not row:
+        return None
+    age = now - row["at"]
+    fresh = live and age <= FORECAST_FRESH and now <= row["at"] + (row["high"] or row["remaining"])
+    why = (None if fresh else "轮次未运行或监测信号中断" if not live else
+           "研判已超过 3 小时" if age > FORECAST_FRESH else "已超过模型研判的完成时间")
+    left = lambda x: None if x is None else round(max(0, row["at"] + x - now), 1)
+    return {"remaining": left(row["remaining"]), "low": left(row["low"]), "high": left(row["high"]),
+            "finish": round(row["at"] + row["remaining"], 1), "at": row["at"], "age": round(age),
+            "ended": row["ended"], "basis": row["basis"], "fresh": fresh, "stale_reason": why}
 
 
 def replay(tasks, at):
@@ -517,8 +638,8 @@ def backtest(key, points=40):
         if not run:
             raise ValueError("轮次不存在")
         tasks = [dict(x) for x in c.execute("SELECT * FROM tasks WHERE run_id=? ORDER BY rowid", (key,))]
-        priors = {x["group_name"]: dict(x) for x in c.execute("SELECT * FROM eta_priors WHERE run_id=?", (key,))}
-        params = {x["id"]: json.loads(x["params"]) for x in c.execute("SELECT id,params FROM task_params WHERE run_id=?", (key,))}
+        priors, params, limits = eta_inputs(c, key)
+        forecasts = [dict(x) for x in c.execute("SELECT * FROM eta_forecasts WHERE run_id=? ORDER BY at", (key,))]
     ends = [t["ended"] for t in tasks if t["ended"] is not None and t["started"] is not None]
     if run["status"] in ACTIVE or len(ends) < 10:
         raise ValueError("只能回放已结束且至少有 10 个计时任务的轮次")
@@ -526,16 +647,30 @@ def backtest(key, points=40):
     rows = []
     for k in range(1, points):
         at = run["started"] + (finish - run["started"]) * k / points
-        eta = estimate(dict(run, status="running", heartbeat=at), replay(tasks, at), at, priors, params)
+        eta = estimate(dict(run, status="running", heartbeat=at), replay(tasks, at), at, priors, params, limits)
         if eta["seconds"] and finish > at:
             rows.append((finish - at, eta["seconds"][0], eta["point"], eta["seconds"][1]))
     if not rows:
         raise ValueError("回放中没有可用的 ETA")
-    mid = lambda v: sorted(v)[len(v) // 2]
-    return {"run": run["id"], "name": run["name"], "points": len(rows), "tasks": len(tasks),
-            "coverage": sum(lo <= truth <= hi for truth, lo, _, hi in rows) / len(rows),
-            "error": math.exp(mid([abs(math.log(p / truth)) for truth, _, p, _ in rows if p > 0])),
-            "width": mid([hi / lo for _, lo, _, hi in rows if lo > 0])}
+    mid = lambda v: sorted(v)[len(v) // 2] if v else None
+    miss = lambda guess, truth: abs(math.log(guess / truth))
+    result = {"run": run["id"], "name": run["name"], "points": len(rows), "tasks": len(tasks),
+              "coverage": sum(lo <= truth <= hi for truth, lo, _, hi in rows) / len(rows),
+              "error": math.exp(mid([miss(p, truth) for truth, _, p, _ in rows if p > 0])),
+              "width": mid([hi / lo for _, lo, _, hi in rows if lo > 0]), "forecasts": None}
+    # Model forecasts made during the run, scored against the actual finish and against the algorithm at the same moment.
+    scored = []
+    for f in forecasts:
+        if f["at"] < finish:
+            algo = estimate(dict(run, status="running", heartbeat=f["at"]), replay(tasks, f["at"]), f["at"], priors, params, limits)
+            scored.append((finish - f["at"], f, algo.get("point")))
+    if scored:
+        ranged = [(truth, f) for truth, f, _ in scored if f["low"] and f["high"]]
+        result["forecasts"] = {
+            "count": len(scored), "error": math.exp(mid([miss(f["remaining"], truth) for truth, f, _ in scored])),
+            "algorithm_error": math.exp(mid([miss(p, truth) for truth, _, p in scored if p])) if any(p for *_, p in scored) else None,
+            "coverage": sum(f["low"] <= truth <= f["high"] for truth, f in ranged) / len(ranged) if ranged else None}
+    return result
 
 
 def snapshot(key):
@@ -545,8 +680,8 @@ def snapshot(key):
             raise ValueError("轮次不存在")
         run = dict(row)
         tasks = [dict(x) for x in c.execute("SELECT * FROM tasks WHERE run_id=? ORDER BY rowid", (key,))]
-        priors = {x["group_name"]: dict(x) for x in c.execute("SELECT * FROM eta_priors WHERE run_id=?", (key,))}
-        params = {x["id"]: json.loads(x["params"]) for x in c.execute("SELECT id,params FROM task_params WHERE run_id=?", (key,))}
+        priors, params, limits = eta_inputs(c, key)
+        forecast = c.execute("SELECT * FROM eta_forecasts WHERE run_id=? ORDER BY at DESC LIMIT 1", (key,)).fetchone()
     now = time.time()
     counts = {s: sum(t["state"] == s for t in tasks) for s in ("succeeded", "failed", "running", "pending")}
     if run["total"] is not None:
@@ -575,7 +710,8 @@ def snapshot(key):
                failures=[t for t in tasks if t["state"] == "failed"][:30],
                elapsed=max(0, (run["ended"] or now) - run["started"]),
                stale=run["status"] in ACTIVE and now - run["heartbeat"] > 12,
-               server_time=now, eta=estimate(run, tasks, now, priors, params))
+               server_time=now, eta=estimate(run, tasks, now, priors, params, limits))
+    run["eta"]["forecast"] = forecast_view(forecast, run["status"] in ACTIVE and not run["stale"], now)
     try:
         with open(run["log"], "rb") as f:
             f.seek(0, 2)
@@ -644,12 +780,37 @@ def brief(run):
              f"进度：{progress} · 成功 {c['succeeded']} · 失败 {c['failed']} · 运行中 {c['running']} · 等待 {c['pending']}",
              ("最后确认的耗时：" + duration(max(0, run["heartbeat"] - run["started"])) if run["stale"]
               else "已运行：" + duration(run["elapsed"]))]
-    eta = run["eta"]
-    if eta["seconds"] and run["status"] in ACTIVE and not run["stale"]:
-        lo, hi = (duration(x) for x in eta["seconds"])
-        lines.append(f"预计剩余（{eta['label']}）：约 {duration(eta['point'])}（范围 {lo if lo == hi else lo + '–' + hi}）")
+    eta, live = run["eta"], run["status"] in ACTIVE and not run["stale"]
+    span = lambda a, b: duration(a) if duration(a) == duration(b) else duration(a) + "–" + duration(b)
+    ago = lambda x: "刚刚" if x < 60 else duration(x) + "前"
+    f = eta.get("forecast")
+    lead = bool(f and f["fresh"])
+    if lead:
+        extra = f"（研判区间 {span(f['low'], f['high'])}）" if f["low"] is not None and f["high"] is not None else ""
+        lines.append(f"预计剩余（模型研判，{ago(f['age'])}）：约 {duration(f['remaining'])}{extra}")
+    if eta["seconds"] and live:
+        lines.append(f"{'算法估计' if lead else '预计剩余'}（{eta['label']}）：约 {duration(eta['point'])}"
+                     f"（大概率 {span(*eta['seconds'])}）")
+        if eta.get("latest"):
+            lines.append(f"最迟：约 {duration(eta['latest'])}（所有剩余任务跑满单项时限）")
     elif run["status"] in ACTIVE:
-        lines.append("预计剩余：暂无法估计（" + eta["reason"] + "）")
+        lines.append(("算法估计" if lead else "预计剩余") + "：暂无法估计（" + eta["reason"] + "）")
+    if f and not lead:
+        lines.append(f"上次模型研判：{ago(f['age'])}，当时估计剩余 {duration(f['finish'] - f['at'])}；{f['stale_reason']}")
+    if live:
+        # What a model needs for its next forecast during a silent follow-up.
+        if eta.get("limit"):
+            lines.append(eta["limit"])
+        left = [g for g in run["groups"] if g["running"] + g["pending"]]
+        parts = [f"{g['name']} {g['running'] + g['pending']} 项（" + (f"中位 {duration(g['median'])}" if g["median"] else "尚无样本") + "）"
+                 for g in left[:12]]
+        if len(left) > 12:
+            parts[-1] += "等"
+        unregistered = (total or 0) - sum(g["registered"] for g in run["groups"])
+        if unregistered > 0:
+            parts.append(f"尚未登记 {unregistered} 项")
+        if parts:
+            lines.append("剩余任务：" + "；".join(parts))
     if run["throughput"]["per_hour"]:
         lines.append(f"近期节奏：约 {run['throughput']['per_hour']:.1f} 项/小时（最近 {run['throughput']['samples']} 项结束时间）")
     if run["exit_code"] is not None:
@@ -777,7 +938,7 @@ def launch(args):
     url = ensure_server()
     key = create_run(args.name, args.cwd, args.total, plan, args.demo,
                      args.log if args.action == "attach" else None, info[1] if info else None,
-                     args.estimate_seconds, args.estimate_source)
+                     args.estimate_seconds, args.estimate_source, args.task_limit_seconds, args.task_limit_source)
     child_args = [sys.executable, str(SCRIPT), "_supervise", "--run", key]
     if info:
         child_args += ["--pid", str(args.pid), "--identity", info[0]]
@@ -811,6 +972,8 @@ def main():
         p.add_argument("--plan")
         p.add_argument("--estimate-seconds", type=float, help="有依据的单次实验初始耗时预估，单位秒")
         p.add_argument("--estimate-source", help="初始耗时预估的依据，与 --estimate-seconds 同时使用")
+        p.add_argument("--task-limit-seconds", type=float, help="单项时限（如求解器 TimeLimit），单位秒")
+        p.add_argument("--task-limit-source", help="单项时限的出处，与 --task-limit-seconds 同时使用")
         p.add_argument("--demo", action="store_true")
         p.add_argument("--open", action="store_true")
         if name == "attach":
@@ -831,6 +994,17 @@ def main():
     p.add_argument("--limit", type=int, default=20)
     p = sub.add_parser("backtest", help="回放已结束轮次，检验 ETA 当时的准确度（只读）")
     p.add_argument("--run", help="省略时回放最近 20 个已结束轮次")
+    p = sub.add_parser("set-limit", help="录入单项时限，ETA 不会超过它")
+    p.add_argument("--run", required=True)
+    p.add_argument("--seconds", type=float, required=True)
+    p.add_argument("--source", required=True)
+    p.add_argument("--group", default="*", help="省略时适用于所有组")
+    p = sub.add_parser("forecast", help="写入模型在静默跟进中对剩余时间的研判")
+    p.add_argument("--run", required=True)
+    p.add_argument("--remaining", type=float, required=True, help="剩余秒数")
+    p.add_argument("--low", type=float, help="研判区间下端，秒")
+    p.add_argument("--high", type=float, help="研判区间上端，秒")
+    p.add_argument("--basis", required=True, help="研判依据，一两句话")
     p = sub.add_parser("set-prior")
     p.add_argument("--run", required=True)
     p.add_argument("--seconds", type=float, required=True)
@@ -873,8 +1047,17 @@ def main():
                         raise
                     print(f"{key}  跳过：{exc}")
                     continue
-                print(f"{b['run']}  {b['tasks']} 项 · {b['points']} 个时点：实际剩余落在范围内 {b['coverage']:.0%}，"
-                      f"点估计中位偏差 ×{b['error']:.2f}，范围上下界比中位 ×{b['width']:.2f}  {b['name']}")
+                print(f"{b['run']}  {b['tasks']} 项 · {b['points']} 个时点：实际剩余落在大概率范围内 {b['coverage']:.0%}，"
+                      f"算法点估计中位偏差 ×{b['error']:.2f}，范围上下界比中位 ×{b['width']:.2f}  {b['name']}")
+                f = b["forecasts"]
+                if f:
+                    print(f"    模型研判 {f['count']} 次：中位偏差 ×{f['error']:.2f}"
+                          + (f"；同一时刻算法 ×{f['algorithm_error']:.2f}" if f["algorithm_error"] else "")
+                          + (f"；实际剩余落在研判区间内 {f['coverage']:.0%}" if f["coverage"] is not None else ""))
+        elif args.action == "set-limit":
+            set_limit(args.run, args.seconds, args.source, args.group)
+        elif args.action == "forecast":
+            record_forecast(args.run, args.remaining, args.basis, args.low, args.high)
         elif args.action == "set-prior":
             set_prior(args.run, args.seconds, args.source, args.group)
         elif args.action == "_serve":

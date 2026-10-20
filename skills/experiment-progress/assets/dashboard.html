@@ -179,7 +179,7 @@ h1{font:600 clamp(22px,2.6vw,30px)/1.25 var(--serif);margin:6px 0 10px;letter-sp
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:var(--ink-2);margin-top:6px}
 .legend span{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
 .sw{width:9px;height:9px;border-radius:3px;display:inline-block}
-.eta-note{font-size:12px;color:var(--muted);margin:14px 0 0;padding:10px 12px;background:var(--sunk);border-radius:10px;border-left:3px solid var(--fan)}
+.eta-note{white-space:pre-line;font-size:12px;color:var(--muted);margin:14px 0 0;padding:10px 12px;background:var(--sunk);border-radius:10px;border-left:3px solid var(--fan)}
 .foot-meta{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px 16px;color:var(--muted);font-size:12px;margin-top:14px;font-variant-numeric:tabular-nums}
 
 /* sections */
@@ -354,6 +354,7 @@ let table=null,tableKey=null,tableVersion=null,prevStates=new Map(),prevRunStatu
 /* ---------- formatting ---------- */
 function duration(s){s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),v=s%60;return h?`${h} 小时 ${String(m).padStart(2,'0')} 分`:(m?`${m} 分 ${String(v).padStart(2,'0')} 秒`:`${v} 秒`);}
 function short(s){s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h}h${String(m).padStart(2,'0')}m`:(m?`${m}m${String(s%60).padStart(2,'0')}s`:`${s}s`);}
+const ago=s=>s<60?'刚刚':duration(s)+'前';
 function range(a,b){const lo=duration(a),hi=duration(b);return lo===hi?lo:lo+' – '+hi;}
 function date(s){return new Date(s*1000).toLocaleString('zh-CN',{hour12:false});}
 function hm(s,withDay){const d=new Date(s*1000);const t=d.toLocaleTimeString('zh-CN',{hour12:false,hour:'2-digit',minute:'2-digit'});return withDay?`${d.getMonth()+1}/${d.getDate()} ${t}`:t;}
@@ -365,13 +366,15 @@ const css=name=>getComputedStyle(root).getPropertyValue(name).trim();
 const reduce=matchMedia('(prefers-reduced-motion: reduce)');
 let theme=store.get('theme','auto'),motionPref=store.get('motion',''),notify=store.get('notify','off')==='on';
 const motionOn=()=>(motionPref?motionPref==='on':!reduce.matches)&&!document.hidden;
-function applyTheme(){if(theme==='auto')root.removeAttribute('data-theme');else root.setAttribute('data-theme',theme);text('theme-btn','主题：'+{auto:'自动',light:'亮色',dark:'暗色'}[theme]);colors=null;drawMatrix();drawCurve();favSig='';}
+// Inside Codex (plugin bridge) "auto" follows the host theme instead of the system setting.
+function applyTheme(){const hostTheme=window.EPHost?.context.theme;if(theme==='auto'&&hostTheme)root.setAttribute('data-theme',hostTheme);else if(theme==='auto')root.removeAttribute('data-theme');else root.setAttribute('data-theme',theme);text('theme-btn','主题：'+{auto:'自动',light:'亮色',dark:'暗色'}[theme]);colors=null;drawMatrix();drawCurve();favSig='';}
 function applyMotion(){const on=motionPref?motionPref==='on':!reduce.matches;root.classList.toggle('motion',on);$('motion-btn').setAttribute('aria-pressed',String(on));text('motion-btn',on?'动效：开':'动效：关');if(!on)root.style.setProperty('--beat','1');kick();}
 $('theme-btn').onclick=()=>{theme={auto:'light',light:'dark',dark:'auto'}[theme];store.set('theme',theme);applyTheme();};
 $('motion-btn').onclick=()=>{const on=root.classList.contains('motion');motionPref=on?'off':'on';store.set('motion',motionPref);applyMotion();};
 reduce.addEventListener?.('change',applyMotion);
+addEventListener('ep-host-context',applyTheme);
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change',()=>{colors=null;drawMatrix();drawCurve();favSig='';});
-if('Notification' in window){
+if('Notification' in window&&!window.EPHost){
   const nb=$('notify-btn');nb.hidden=false;
   const paint=()=>{const denied=Notification.permission==='denied';nb.setAttribute('aria-pressed',String(notify&&!denied));text(nb,denied?'结束提醒：浏览器已拒绝':notify?'结束提醒：开':'结束提醒：关');};
   nb.onclick=async()=>{if(!notify&&Notification.permission==='default'){try{await Notification.requestPermission();}catch{}}notify=!notify&&Notification.permission==='granted';store.set('notify',notify?'on':'off');paint();};
@@ -380,7 +383,7 @@ if('Notification' in window){
 function notifyEnd(r){if(!notify||!('Notification' in window)||Notification.permission!=='granted')return;try{new Notification('实验结束 · '+r.name,{body:(STATES[r.status]||r.status)+` · 成功 ${r.succeeded} · 失败 ${r.failed}`,tag:'ep-'+r.id});}catch{}}
 
 /* ---------- api ---------- */
-async function api(path){const response=await fetch(path,{headers:{Authorization:'Bearer '+(token||'')},cache:'no-store',signal:AbortSignal.timeout(6000)});if(!response.ok){const e=Error(response.status===403?'访问凭据已失效，请用本地启动器重新打开面板。':response.status===404?'not-found':'暂时无法读取实验状态。');e.status=response.status;throw e;}return response.json();}
+async function api(path){if(window.EP_BRIDGE)return window.EP_BRIDGE(path);const response=await fetch(path,{headers:{Authorization:'Bearer '+(token||'')},cache:'no-store',signal:AbortSignal.timeout(6000)});if(!response.ok){const e=Error(response.status===403?'访问凭据已失效，请用本地启动器重新打开面板。':response.status===404?'not-found':'暂时无法读取实验状态。');e.status=response.status;throw e;}return response.json();}
 
 /* ---------- odometer ---------- */
 function roll(el,str,html){
@@ -515,8 +518,8 @@ function drawCurve(){
   ends.sort((a,b)=>a-b);
   $('curve-empty').hidden=ends.length>0;svg.style.display=ends.length?'block':'none';if(!ends.length)return;
   const W=Math.max(260,svg.clientWidth||svg.parentElement.clientWidth),H=230,L=40,R=14,T=16,B=26;
-  const live=ACTIVE.has(run.status)&&!run.stale,eta=live&&run.eta.seconds?run.eta.seconds:null,mid=eta?(run.eta.point??Math.sqrt(eta[0]*eta[1])):0,tn=run.ended||(run.stale?run.heartbeat:now());
-  const total=run.total||Math.max(ends.length,1),t0=run.started;let t1=eta?tn+eta[1]:tn;if(t1-t0<60)t1=t0+60;
+  const live=ACTIVE.has(run.status)&&!run.stale,eta=live&&run.eta.seconds?run.eta.seconds:null,mid=eta?(run.eta.point??Math.sqrt(eta[0]*eta[1])):0,fc=live&&run.eta.forecast&&run.eta.forecast.fresh?run.eta.forecast:null,latest=live?run.eta.latest:null,tn=run.ended||(run.stale?run.heartbeat:now());
+  const total=run.total||Math.max(ends.length,1),t0=run.started;let t1=Math.max(tn,eta?tn+eta[1]:0,fc?fc.finish:0,latest?tn+latest:0);if(t1-t0<60)t1=t0+60;
   const X=t=>L+(t-t0)/(t1-t0)*(W-L-R),Y=k=>T+(1-k/total)*(H-T-B);
   const P=palette(),day=t1-t0>20*3600||new Date(t0*1000).getDate()!==new Date(t1*1000).getDate();
   let d=`M${X(t0).toFixed(1)},${Y(0).toFixed(1)}`;ends.forEach((e,k)=>{d+=`H${X(e).toFixed(1)}V${Y(k+1).toFixed(1)}`;});d+=`H${X(tn).toFixed(1)}`;
@@ -527,11 +530,13 @@ function drawCurve(){
   if(eta){const e0=X(tn+eta[0]),e1=X(tn+eta[1]),yN=Y(ends.length),yT=Y(total);
     g+=`<polygon points="${X(tn)},${yN} ${e0},${yT} ${e1},${yT}" fill="${P.fan}" opacity=".16"/><line x1="${X(tn)}" y1="${yN}" x2="${e0}" y2="${yT}" stroke="${P.fan}" stroke-dasharray="3 3"/><line x1="${X(tn)}" y1="${yN}" x2="${e1}" y2="${yT}" stroke="${P.fan}" stroke-dasharray="3 3"/><line x1="${X(tn)}" y1="${yN}" x2="${X(tn+mid)}" y2="${yT}" stroke="${P.fan}" stroke-width="1.6"/><circle cx="${X(tn+mid)}" cy="${yT}" r="2.6" fill="${P.fan}"/>`;
     g+=`<text x="${Math.min(W-R,Math.max(e0,X(tn)+40))}" y="${yT-6}" text-anchor="end" style="fill:${P.fan}">预测范围 · 启发式</text>`;}
+  if(latest){const x=X(tn+latest);g+=`<line x1="${x}" x2="${x}" y1="${T}" y2="${Y(0)}" stroke="${P.bad}" stroke-dasharray="1 3" opacity=".7"/><text x="${x-4}" y="${Y(0)-6}" text-anchor="end" style="fill:${P.bad}">最迟</text>`;}
+  if(fc){const x=X(fc.finish),y=Y(total);g+=`<path d="M${x},${y-5}L${x+5},${y}L${x},${y+5}L${x-5},${y}Z" fill="${P.panel}" stroke="${P.run}" stroke-width="1.6"/><text x="${x}" y="${y+16}" text-anchor="middle" style="fill:${P.run}">模型研判</text>`;}
   g+=`<path d="${area}" fill="${P.ok}" opacity=".12"/><path d="${d}" fill="none" stroke="${P.ok}" stroke-width="1.8" stroke-linejoin="round"/>`;
   for(const f of fails)g+=`<line x1="${X(f).toFixed(1)}" x2="${X(f).toFixed(1)}" y1="${Y(0)}" y2="${Y(0)-7}" stroke="${P.bad}" stroke-width="1.5"/>`;
   g+=`<line x1="${L}" x2="${W-R}" y1="${Y(0)}" y2="${Y(0)}" stroke="${P.faint}"/>`;
   if(live){g+=`<line x1="${X(tn)}" x2="${X(tn)}" y1="${T-4}" y2="${Y(0)}" stroke="${P.ink}" stroke-dasharray="2 3" opacity=".55"/><circle cx="${X(tn)}" cy="${Y(ends.length)}" r="3.2" fill="${P.panel}" stroke="${P.ok}" stroke-width="2"/>`;}
-  const tickT=[t0,tn];if(eta)tickT.push(t1);
+  const tickT=[t0,tn];if(eta||fc||latest)tickT.push(t1);
   tickT.forEach((t,k)=>{const x=X(t),anchor=k===0?'start':(k===tickT.length-1&&x>W-60?'end':'middle');g+=`<text x="${x}" y="${H-8}" text-anchor="${anchor}">${k===1&&live?'现在 ':''}${hm(t,day)}</text>`;});
   svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.innerHTML=g;
   svg.setAttribute('aria-label',`累计完成曲线：已结束 ${ends.length} / ${total}，失败 ${fails.length}`);
@@ -599,7 +604,7 @@ function renderRail(){
   if(ssig!==selectSig){selectSig=ssig;$('run-select').replaceChildren(...runs.map(r=>{const o=document.createElement('option');o.value=r.id;o.textContent=(r.demo?'[模拟] ':'')+r.name+' · '+railDate(r.started);return o;}));}
   if(selected)$('run-select').value=selected;
 }
-function choose(id){if(id===selected)return;selected=id;const u=new URL(location.href);u.searchParams.set('run',id);history.replaceState(null,'',u);table=null;tableKey=null;tableVersion=null;prevStates=new Map();M.anims.clear();logText=null;$('search').value='';M.query='';text('search-count','');railSig='';refresh();}
+function choose(id){if(id===selected)return;selected=id;try{const u=new URL(location.href);u.searchParams.set('run',id);history.replaceState(null,'',u);}catch{}table=null;tableKey=null;tableVersion=null;prevStates=new Map();M.anims.clear();logText=null;$('search').value='';M.query='';text('search-count','');railSig='';refresh();}
 $('run-select').onchange=e=>choose(e.target.value);
 
 function rows(id,values,numFrom=2){const out=document.createDocumentFragment();for(const fields of values){const tr=document.createElement('tr');fields.forEach((v,i)=>{const td=document.createElement('td');if(v instanceof Node)td.append(v);else td.textContent=String(v);if(i>=numFrom&&!(v instanceof Node))td.className='num';if(i===0)td.classList.add('id');tr.append(td);});out.append(tr);}$(id).replaceChildren(out);}
@@ -614,16 +619,20 @@ function render(r){
   roll($('count'),`${ended} / ${r.total??'未知'}`,[[String(ended),''],[` / ${r.total??'未知'}`,'small']]);
   text('count-note',c.failed?`其中 ${c.failed} 次失败`:'失败任务单独计数');
   ticking(r);
-  // ETA
-  const est=r.eta.seconds,methods=r.eta.methods||[];
+  // ETA: a fresh model forecast leads and counts down; the algorithm is the fallback and second opinion.
+  const est=r.eta.seconds,methods=r.eta.methods||[],fc=r.eta.forecast,lead=!!(live&&fc&&fc.fresh);
   let level=0;if(est&&live){level=methods.includes('pooled')||methods.includes('similar')?1:methods.includes('prior')||methods.includes('scaled')?2:methods.includes('few')?3:4;}
   [...$('ladder').children].forEach((i,k)=>i.classList.toggle('on',k<level));
   $('ladder').title='估计依据：'+(level?LADDER[level-1]:'暂无')+'（由弱到强：'+LADDER.join(' → ')+'）';
-  $('overrun').hidden=!(live&&methods.includes('overrun'));
-  text('eta-label','预计剩余'+(est&&live?' · '+(r.eta.label||'估计'):''));
-  if(est&&live){const pt=r.eta.point??Math.sqrt(est[0]*est[1]);text('eta','约 '+duration(pt));text('eta-total','范围 '+range(est[0],est[1])+' · 预计总耗时约 '+duration(r.elapsed+pt));}
-  else{text('eta',isActive||r.status==='monitor_error'?'暂无法估计':'已退出');text('eta-total',isActive?r.eta.reason:r.status==='monitor_error'?'请核验实验进程':'记录耗时 '+duration(r.elapsed));}
-  text('eta-note',isActive?r.eta.reason:'数量基于任务报告；进程退出不自动补齐成功次数。');
+  $('ladder').hidden=lead;
+  $('overrun').hidden=!(live&&!lead&&(methods.includes('overrun')||methods.includes('overlimit')));
+  text('overrun',methods.includes('overlimit')?'已达时限':'超时上调');
+  text('eta-label','预计剩余'+(lead?' · 模型研判':est&&live?' · '+(r.eta.label||'估计'):''));
+  etaTick(r);
+  const notes=[];
+  if(fc&&isActive)notes.push(lead?`模型研判（${ago(fc.age)}，当时已结束 ${fc.ended} 项）：${fc.basis}`:`上次模型研判在${ago(fc.age)}，${fc.stale_reason}，现按算法估计。`);
+  notes.push(isActive?(fc?'算法：':'')+r.eta.reason:'数量基于任务报告；进程退出不自动补齐成功次数。');
+  text('eta-note',notes.join('\n'));
   // pace
   const ph=r.throughput?.per_hour;
   if(ph){roll($('pace'),ph>=10?ph.toFixed(0):ph.toFixed(1),[[ph>=10?ph.toFixed(0):ph.toFixed(1),''],[' 项/时','small']]);text('pace-note',`最近 ${r.throughput.samples} 项结束时间 · 当前并发 ${r.concurrency}`);}
@@ -664,11 +673,23 @@ function render(r){
       src.append(dt,dd,cell);}}
   mascot(r,false);title(r);favicon(r);
 }
+function etaTick(r){
+  const isActive=ACTIVE.has(r.status),live=isActive&&!r.stale,est=r.eta.seconds,fc=r.eta.forecast,lead=!!(live&&fc&&fc.fresh);
+  const gone=Math.max(0,now()-r.server_time),left=x=>Math.max(0,x-gone),sub=[];
+  if(lead){const due=fc.finish-now();text('eta',due>=1?'约 '+duration(due):'已到研判时间');
+    if(fc.low!=null&&fc.high!=null)sub.push('研判区间 '+range(left(fc.low),left(fc.high)));
+    if(est&&live)sub.push('算法约 '+duration(left(r.eta.point)));}
+  else if(est&&live){text('eta','约 '+duration(left(r.eta.point)));sub.push('大概率 '+range(left(est[0]),left(est[1])));}
+  if(live&&r.eta.latest)sub.push('最迟约 '+duration(left(r.eta.latest)));
+  if(lead||(est&&live))text('eta-total',sub.join(' · '));
+  else{text('eta',isActive||r.status==='monitor_error'?'暂无法估计':'已退出');text('eta-total',isActive?r.eta.reason:r.status==='monitor_error'?'请核验实验进程':'记录耗时 '+duration(r.elapsed));}
+}
 function ticking(r){
   if(!r)return;const live=ACTIVE.has(r.status)&&!r.stale,t=now();
   const el=r.stale?Math.max(0,r.heartbeat-r.started):live?Math.max(0,t-r.started):r.elapsed;
   text('elapsed-label',r.stale?'最后确认的耗时':live?'已经运行':'总耗时');roll($('elapsed'),duration(el));
   text('elapsed-note',r.ended?'结束于 '+date(r.ended):'启动于 '+hm(r.started,true));
+  etaTick(r);
   rows('active',r.active.map(x=>[x.id,x.group_name,x.started?duration(Math.max(0,(live?t:(r.ended||r.heartbeat))-x.started)):'未知',x.attempt]));
 }
 setInterval(()=>{if(run)ticking(run);},1000);

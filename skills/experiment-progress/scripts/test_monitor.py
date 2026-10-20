@@ -33,15 +33,15 @@ def check():
             run = dict(c.execute("SELECT * FROM runs WHERE id=?", (key,)).fetchone())
         near = lambda got, want: all(abs(x - y) <= 0.3 for x, y in zip(got, want))
         eta = m.estimate(run, tasks, now)
-        assert near(eta["seconds"], [18.8, 61.6]) and near([eta["point"]], [34.1]) and eta["label"] == "按组估计", eta
+        assert near(eta["seconds"], [26.7, 43.4]) and near([eta["point"]], [34.1]) and eta["label"] == "按组估计", eta
         assert m.estimate(run, tasks, now+20)["seconds"] is None
         # A single timed success must unlock estimates, including groups not yet started.
         early = [tasks[0], tasks[3], tasks[4], dict(tasks[5], group_name="B")]
         eta = m.estimate(dict(run, total=4), early, now)
-        assert near(eta["seconds"], [8.0, 98.4]) and eta["label"] == "跨组粗估", eta
+        assert near(eta["seconds"], [14.5, 54.0]) and eta["label"] == "跨组粗估", eta
         same_group = [t for t in early if t["group_name"] == "A"]
         eta = m.estimate(dict(run, total=3), same_group, now)
-        assert near(eta["seconds"], [4.2, 78.0]) and eta["label"] == "初步估计", eta
+        assert near(eta["seconds"], [7.5, 43.1]) and eta["label"] == "初步估计", eta
         two_samples = [tasks[0], tasks[1], tasks[3]]
         assert m.estimate(dict(run, total=3), two_samples, now)["label"] == "初步估计"
         cold = [tasks[3], tasks[4]]
@@ -61,7 +61,7 @@ def check():
         overrun_run = dict(run, heartbeat=now+20)
         slow = tasks[:3] + [dict(tasks[3], started=now-2), dict(tasks[4], state="running", started=now-12), tasks[5]]
         eta = m.estimate(overrun_run, slow, now+20)
-        assert near(eta["seconds"], [8.4, 63.1]) and eta["label"] == "动态粗估" and "overrun" in eta["methods"], eta
+        assert near(eta["seconds"], [15.2, 34.8]) and eta["label"] == "动态粗估" and "overrun" in eta["methods"], eta
         assert m.estimate(overrun_run, list(reversed(slow)), now+20) == eta
         def fixture(rows, total=None):
             """rows: (id, group, state, seconds or running age); finished tasks end before `now`."""
@@ -102,6 +102,22 @@ def check():
         rows = [(f"cfg{c}/inst{x}/s0", "G", "succeeded", 40 if x == "A" else 10) for c in range(3) for x in "AB"]
         assert renamed(rows + [("cfg9/instB/s1", "G", "running", 0.1), ("cfg9/instA/s0", "G", "pending", 0)])["point"] - \
             renamed(rows + [("cfg9/instB/s1", "G", "running", 0.1), ("cfg9/instB/s0", "G", "pending", 0)])["point"] > 15
+        # A solver time limit caps every estimate: no power-law extrapolation past it, plus a hard "latest" bound.
+        solver = ([(f"e{i}", "emilp/n=10", "succeeded", 1) for i in range(3)] + [(f"a{i}", "milp/n=10", "succeeded", 5) for i in range(3)]
+                  + [(f"b{i}", "milp/n=20", "succeeded", 1801 + i * 0.3) for i in range(3)] + [("r", "milp/n=20", "running", 100)]
+                  + [(f"c{i}", "milp/n=30", "pending", 0) for i in range(6)])
+        eta = m.estimate(*fixture(solver), now)
+        assert near([eta["latest"]], [1801.6 - 100 + 6 * 1801.6]) and eta["point"] <= eta["latest"] and eta["seconds"][1] <= eta["latest"], eta
+        assert "推断单项时限" in eta["limit"], eta
+        given = m.estimate(*fixture(solver), now, limits={"*": {"seconds": 1800, "source": "Gurobi TimeLimit"}})
+        assert near([given["latest"]], [eta["latest"]]) and "Gurobi TimeLimit" in given["reason"], given
+        # Runs stopped by the limit are not rescaled by parameters, so a mid-way task in such a group is not "overdue".
+        midway = m.estimate(*fixture(solver[:9] + [("r", "milp/n=20", "running", 1100)]), now)
+        assert not {"overrun", "overlimit"} & set(midway["methods"]) and near([midway["point"]], [1801.6 - 1100]), midway
+        spread_out = [(f"s{i}", "G", "succeeded", d) for i, d in enumerate((1200, 1500, 1801))] + [("r", "G", "running", 10), ("p", "G", "pending", 0)]
+        assert m.estimate(*fixture(spread_out), now)["latest"] is None
+        stuck = m.estimate(*fixture(solver[:9] + [("r", "milp/n=20", "running", 1900)]), now)
+        assert "overlimit" in stuck["methods"] and stuck["label"] == "动态粗估" and near([stuck["point"]], [0.05 * 1801.6]), stuck
         # Seeded replay of a whole synthetic run: the range should usually contain the time actually left.
         rng, slots, synthetic = random.Random(7), [now - 5000] * 2, []
         for j in range(160):
@@ -177,10 +193,47 @@ def check():
         for i in range(12):
             m.report(f"cfg{i % 3}/inst{i % 4}", "succeeded", run_id=replayed, started_at=now - 190 + 15 * i, ended_at=now - 180 + 15 * i + i % 4)
         m.finish(replayed, 0)
+        with m.db() as c:
+            c.execute("INSERT INTO eta_forecasts VALUES (?,?,?,?,?,?,?)", (replayed, now - 100, 6, 100, 60, 150, "fixture forecast"))
         result = m.backtest(replayed)
         assert result["points"] > 20 and 0 <= result["coverage"] <= 1 and result["error"] >= 1, result
+        f = result["forecasts"]
+        assert f["count"] == 1 and f["error"] >= 1 and f["coverage"] in (0, 1) and f["algorithm_error"], f
         printed = subprocess.check_output([sys.executable, str(m.SCRIPT), "backtest", "--run", replayed], text=True)
-        assert replayed in printed and "落在范围内" in printed, printed
+        assert replayed in printed and "落在大概率范围内" in printed and "模型研判 1 次" in printed, printed
+        # Model forecasts lead while fresh; the algorithm takes over when they expire or are overtaken.
+        fc = m.create_run("forecast", root, total=3)
+        m.report("f1", "running", run_id=fc)
+        for bad in ((0, "basis", None, None), (600, "", None, None), (600, "basis", 700, None), (600, "basis", None, 500)):
+            try:
+                m.record_forecast(fc, *bad[:2], *bad[2:])
+                raise AssertionError("accepted invalid forecast")
+            except ValueError:
+                pass
+        m.record_forecast(fc, 600, "TimeLimit 1800 s, 3 tasks left, serial", 300, 1200)
+        view = m.snapshot(fc)["eta"]["forecast"]
+        assert view["fresh"] and 595 <= view["remaining"] <= 600 and view["ended"] == 0 and "TimeLimit" in view["basis"], view
+        assert "模型研判" in m.brief(m.snapshot(fc))
+        with m.db() as c:
+            c.execute("UPDATE eta_forecasts SET at=at-1300 WHERE run_id=?", (fc,))
+        view = m.snapshot(fc)["eta"]["forecast"]
+        assert not view["fresh"] and view["stale_reason"] == "已超过模型研判的完成时间" and view["remaining"] == 0, view
+        assert "上次模型研判" in m.brief(m.snapshot(fc))
+        with m.db() as c:
+            c.execute("UPDATE eta_forecasts SET at=at-4*3600, remaining=99999, high=NULL WHERE run_id=?", (fc,))
+        assert m.snapshot(fc)["eta"]["forecast"]["stale_reason"] == "研判已超过 3 小时"
+        subprocess.check_call([sys.executable, str(m.SCRIPT), "forecast", "--run", fc, "--remaining", "120", "--basis", "cli check"])
+        subprocess.check_call([sys.executable, str(m.SCRIPT), "set-limit", "--run", fc, "--seconds", "1800", "--source", "Gurobi TimeLimit"])
+        assert m.snapshot(fc)["eta"]["forecast"]["basis"] == "cli check"
+        with m.db() as c:
+            assert c.execute("SELECT seconds, source FROM eta_limits WHERE run_id=?", (fc,)).fetchone()[:] == (1800, "Gurobi TimeLimit")
+        m.finish(fc, 0)
+        try:
+            m.record_forecast(fc, 60, "too late")
+            raise AssertionError("accepted a forecast for a finished run")
+        except ValueError:
+            pass
+        assert m.snapshot(fc)["eta"]["forecast"]["stale_reason"] == "轮次未运行或监测信号中断"
         second = m.create_run("parallel", root, total=20)
         def worker(i):
             with m.task(str(i), run_id=second):
@@ -216,7 +269,7 @@ def check():
         try:
             req = urllib.request.Request(meta["base"]+"/api/runs", headers={"Authorization":"Bearer "+meta["token"]})
             with urllib.request.urlopen(req) as response:
-                assert len(json.load(response)) == 9
+                assert len(json.load(response)) == 10
             # Updating only the web service can preserve existing dashboard links.
             os.kill(meta["pid"], signal.SIGTERM)
             for _ in range(50):
@@ -243,7 +296,7 @@ def check():
                 assert [t[0] for t in json.load(response)["tasks"]] == ["c-1", "c-10", "c-2", "c-3"]
                 assert "img-src 'self' data:" in response.headers["Content-Security-Policy"]
             with urllib.request.urlopen(req) as response:
-                assert len(json.load(response)) == 9
+                assert len(json.load(response)) == 10
             for path, headers in (("/api/runs", {}), ("/api/run/"+mixed+"/tasks", {}),
                                   ("/api/runs", {"Authorization":"Bearer "+meta["token"],"Origin":"https://example.com"})):
                 try:
@@ -291,7 +344,7 @@ def check():
                     child.wait()
         finally:
             os.kill(meta["pid"], signal.SIGTERM)
-        print("PASS: counts, retries, concurrent writes, legacy SQL, task order, group stats, ETA (grouped, prior, overrun, failures, scaling, similar names, parameters, replay), stale state, HTTP access, restart, brief/list, detached launch, failure, attach")
+        print("PASS: counts, retries, concurrent writes, legacy SQL, task order, group stats, ETA (grouped, prior, overrun, failures, scaling, similar names, parameters, time limits, model forecasts, replay), stale state, HTTP access, restart, brief/list, detached launch, failure, attach")
 
 
 if __name__ == "__main__":
